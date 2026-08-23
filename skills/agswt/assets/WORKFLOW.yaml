@@ -1,0 +1,272 @@
+name: agswt
+description: Per-account profiles for Claude Code — create, migrate, bind to directories, and report usage.
+version: "0.1"
+
+config:
+  claude_profiles: "${AGSWT_PROFILES_ROOT:-$HOME/.claude_profiles}"
+  claude_default: "$HOME/.claude"
+
+operations:
+
+  create-profile:
+    description: >
+      Create a work profile and hand it off. The agent never signs in — that is
+      an OAuth flow needing a browser — and for a profile that will be used, the
+      sign-in does not happen here at all: it happens at the first interactive
+      launch in the directory the profile is bound to.
+    steps:
+      - step: 1
+        name: choose_tool_and_name
+        description: Decide which tool and what the profile is called.
+        actions:
+          - "Reject a name that already exists as a directory; profiles are never silently reused."
+
+      - step: 2
+        name: create_directory
+        description: Make the config directory and its projects subdirectory.
+        actions:
+          - "mkdir -p <profiles_root>/<name>/projects"
+
+      - step: 3
+        name: seed_shared_config
+        description: >
+          Copy what must be per-profile; symlink what should have one source of
+          truth. See references/manifest.md for why settings.json cannot be a
+          symlink.
+        actions:
+          - "Copy settings.json from an existing profile or the default dir (COPY, never symlink)"
+          - "Copy remote-settings.json if the source has one"
+          - "Symlink CLAUDE.md, commands/ and skills/ to the shared originals"
+
+      - step: 4
+        name: stop_and_hand_off
+        description: >
+          STOP. Name the next step and end the operation. Do not sign in, and do
+          not report the profile as ready. A CLI login does NOT spare a working
+          profile its sign-in screen — the first interactive launch asks again
+          regardless — so sending someone to log in first is wasted work that
+          also makes the later prompt look like a fault.
+        actions:
+          - "Point at the two ways to give the profile work: wire-direnv <name> --dir <directory>, or migrate-workspace --to <name>."
+          - "Say that running claude in that directory will ask for an account, and that this prompt IS the sign-in for the profile."
+          - "ONLY for a profile that will never be launched in (a poll-only account), print: CLAUDE_CONFIG_DIR=<dir> claude auth login --claudeai"
+
+  verify:
+    description: >
+      Say WHICH account a profile ended up holding, after a sign-in has already
+      happened — at the first launch for a working profile, or via the CLI login
+      for a poll-only one. This does not gate the sign-in; nothing waits on it.
+      Its value is that the account which actually landed is often not the one
+      intended, and only a name settles that.
+    steps:
+      - step: 1
+        name: query_status
+        description: Ask the tool, do not infer from files on disk.
+        actions:
+          - "Claude: CLAUDE_CONFIG_DIR=<dir> claude auth status"
+      - step: 2
+        name: report
+        description: Report the account identity, or where the sign-in still has to happen.
+        actions:
+          - "On success, print: signed in as <email> (<plan>) — and say plainly if that is not the account that was expected."
+          - "On failure, do not diagnose. Say where the sign-in happens: launch claude in the bound directory and complete the prompt (or, for a poll-only profile, CLAUDE_CONFIG_DIR=<dir> claude auth login --claudeai)."
+          - "If the profile is signed in but nothing points at it, name the two routes: wire-direnv, or migrate-workspace."
+
+
+  wire-direnv:
+    description: Bind a directory (and everything under it) to a profile.
+    steps:
+      - step: 1
+        name: check_direnv
+        description: direnv is optional; without it, fall back to a manual export.
+        actions:
+          - "command -v direnv || tell the user to export the variable manually and skip the rest"
+
+      - step: 2
+        name: detect_parent_envrc
+        description: >
+          A nested .envrc REPLACES its parent rather than extending it. Missing
+          source_up silently drops the parent's account binding.
+        actions:
+          - "Look for an .envrc in any ancestor directory."
+          - "If one exists, the new file MUST begin with `source_up`."
+
+      - step: 3
+        name: write_envrc
+        description: Write the binding, with a comment saying why.
+        actions:
+          - "Write CLAUDE_CONFIG_DIR for the chosen profile."
+          - "Optionally pin a GitHub identity: export GH_TOKEN=\"$(gh auth token --user <acct>)\""
+          - "Never write a literal token into the file; derive it at load time."
+
+      - step: 4
+        name: allow_and_verify
+        description: Confirm the directory resolves as intended.
+        actions:
+          - "direnv allow <dir>"
+          - "(cd <dir> && direnv exec . sh -c 'echo $CLAUDE_CONFIG_DIR')"
+          - "Verify an ancestor directory still resolves to its own profile (proves source_up worked)."
+
+  migrate-workspace:
+    description: >
+      Move one project's data from one profile to another. Read
+      references/manifest.md first — this is the operation that loses things.
+    steps:
+      - step: 1
+        name: compute_slugs
+        description: A workspace is addressed by a slug derived from its absolute path.
+        actions:
+          - "slug = absolute path with every '/' replaced by '-'"
+          - "If the project directory has since moved, use rename-workspace instead or as well."
+
+      - step: 2
+        name: inventory_source
+        description: Count every category separately. A single total hides a missing category.
+        actions:
+          - "Count: memory files, *.jsonl transcripts, sidecar directories."
+          - "Record the counts; they are the acceptance test in step 6."
+
+      - step: 3
+        name: stage_if_cross_user
+        description: Transcripts are mode 0600 and unreadable across user accounts.
+        actions:
+          - "If source and destination are different OS users, the SOURCE user stages to a world-readable dir."
+          - "chmod -R a+r <staging dir>"
+
+      - step: 4
+        name: copy
+        description: Copy — never move. The source stays until a human deletes it.
+        actions:
+          - "Copy memory/, then *.jsonl, then every sidecar directory."
+          - "Restore mode 0600 on each transcript."
+          - "Restore each transcript's mtime from its last record timestamp (staging destroys mtimes, and the session picker orders by mtime)."
+
+      - step: 5
+        name: merge_indexes
+        description: Concatenate index files rather than overwriting them.
+        actions:
+          - "If both sides have memory/MEMORY.md, append the source's entries instead of replacing the file."
+          - "Deduplicate by line so a re-run does not double entries."
+
+      - step: 6
+        name: verify_counts
+        description: Compare per category against step 2.
+        actions:
+          - "Report each category as source vs destination."
+          - "Do not report success on a matching total if any category differs."
+
+      - step: 7
+        name: migrate_mcp
+        description: MCP servers live in two scopes and the project scope is the one that gets dropped.
+        actions:
+          - "Read user-scope mcpServers and projects[<path>].mcpServers from the source .claude.json."
+          - "Register into the destination with `claude mcp add-json` (user scope: -s user; project scope: -s local, run from inside the project directory)."
+          - "Do not hand-edit .claude.json: a running client rewrites it and will clobber the edit."
+
+      - step: 8
+        name: hand_off_deletion
+        description: The human deletes the source, not the agent.
+        actions:
+          - "Print what remains at the source and its size."
+          - "Say plainly that nothing has been deleted."
+
+  rename-workspace:
+    description: Make a stored slug follow a project directory that moved or was renamed.
+    steps:
+      - step: 1
+        name: locate_old_slug
+        description: Find the orphaned slug directory.
+        actions:
+          - "Old slug is derived from the OLD absolute path."
+          - "Confirm the destination slug does not already exist; if it does, this is a merge, not a rename."
+      - step: 2
+        name: rename
+        description: Move the directory; contents are path-independent.
+        actions:
+          - "Record the session ids under the old slug BEFORE moving anything."
+          - "mv <profiles>/<profile>/projects/<old-slug> <profiles>/<profile>/projects/<new-slug>"
+          - "Verify by session id, not by count alone: every recorded id must exist under the new slug."
+          - "Survey EVERY other profile for the old slug: a project migrated between profiles may hold history elsewhere. Report those locations; renaming them is a separate decision per profile — do not touch them."
+      - step: 3
+        name: report_stale_references
+        description: >
+          Contents may mention the old path. Do not rewrite them blindly — some
+          references are historical fact and correct as written.
+        actions:
+          - "grep the moved directory for the old path and list the hits."
+          - "Report them for a human to judge; do not mass-replace."
+
+  doctor:
+    description: Check the failure modes in references/traps.md.
+    steps:
+      - step: 1
+        name: resolution
+        description: What does this directory actually resolve to?
+        actions:
+          - "Print CLAUDE_CONFIG_DIR as resolved here (via direnv exec if direnv is present)."
+          - "Warn if CLAUDE_CONFIG_DIR is set explicitly to the default ~/.claude — that is not a no-op."
+
+      - step: 2
+        name: session_context
+        description: Keychain reads need a GUI session on macOS.
+        actions:
+          - "launchctl managername — warn if it reports Background."
+
+      - step: 3
+        name: keychain
+        description: A locked keychain makes every account look signed out.
+        actions:
+          - "Read an unrelated item; exit 36 means the keychain is locked, not that the account is gone."
+          - "If locked, print: security unlock-keychain ~/Library/Keychains/login.keychain-db"
+
+      - step: 4
+        name: profiles
+        description: Per profile, report identity and token freshness.
+        actions:
+          - "For each profile: signed-in identity, access token expiry, refresh token expiry."
+          - "Mark a profile stale rather than broken when only the access token has expired."
+
+      - step: 5
+        name: workspace_integrity
+        description: Look for the categories that go missing in a migration.
+        actions:
+          - "For each workspace: memory file count, transcript count, sidecar count."
+          - "Flag a workspace with memory but zero transcripts — the signature of a partial migration."
+
+  report:
+    description: >
+      Usage across every profile, read from the claude binary itself. Never read
+      the OAuth credential: Anthropic scopes it to Claude Code and native
+      Anthropic apps, so a script holding it is a third-party tool using a
+      subscription credential.
+    steps:
+      - step: 1
+        name: discover
+        description: Enumerate profiles. There is no separate measurement tier.
+        actions:
+          - "Every directory under <claude_profiles>, plus the default ~/.claude."
+          - "A profile in active use reports correctly — verified 2026-08-22 against a live session."
+
+      - step: 2
+        name: ask_the_binary
+        description: >
+          One subprocess per profile. Measured 2026-08-22 on 2.1.240 —
+          total_cost_usd 0 and duration_api_ms 0, so no model turn runs.
+        actions:
+          - "CLAUDE_CONFIG_DIR=<dir> claude -p \"/usage\" --output-format json"
+          - "Parse the `result` field: the two percentages and two reset times are on fixed-format lines."
+          - "Do NOT read the keychain, derive a hashed service name, or call the usage endpoint."
+
+      - step: 3
+        name: handle_stale
+        description: An idle profile may hold an expired access token.
+        actions:
+          - "On failure, nudge once: CLAUDE_CONFIG_DIR=<dir> claude -p \"hi\", then retry."
+          - "Whether /usage alone renews an expired token is not yet measured."
+
+      - step: 4
+        name: render
+        description: One table.
+        actions:
+          - "Columns: account, plan, short window %, long window %, reset times, status."
+          - "Format resets with a day unit: a seven-day window routinely reads three digits of hours."

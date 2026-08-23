@@ -1,0 +1,13 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Multi-account",
+      "description": "Manage the multiple Claude accounts one person holds: assign each account to a profile, let a directory decide which profile it runs on, migrate existing work between profiles, and read what is left on every plan in one report.",
+      "skills": [
+        "agswt"
+      ]
+    }
+  ]
+}
