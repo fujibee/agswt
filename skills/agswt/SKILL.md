@@ -14,7 +14,10 @@ anything, and reports how much of each plan is left.
 Two purposes: **different projects should run on different accounts**, and
 **you want to know how much of every subscription is left**.
 
-The model that serves both: **an account is assigned to a profile.** Create a
+The model that serves both: **an account is assigned to a profile.** The
+assignment is just the sign-in, so changing it is signing in again: run
+`/login` with the other account in any Claude Code session running on that
+profile, and every directory bound to the profile follows. Create a
 profile and sign an account into it — a profile may also exist only to be
 watched, holding an account whose remaining quota you read but never spend.
 To actually use a profile, bind a directory to it: everything under that
@@ -162,8 +165,13 @@ Two rules that are not negotiable:
    total hides a whole missing category.
 2. **Never symlink `settings.json`.** Claude Code rewrites it with a
    temp-file-and-rename, which replaces a symlink with a real file and silently
-   breaks the link. `CLAUDE.md`, `commands/` and `skills/` *are* safe to symlink
-   and should be, so there is one source of truth.
+   breaks the link. `CLAUDE.md` *is* safe to symlink as a file. `skills/` and
+   `commands/` are shared differently: **a real directory whose entries are
+   absolute symlinks** — never the directory itself. Installers write into
+   these directories and compute relative link targets against the logical
+   path; through a directory symlink the file lands at the physical location
+   and the computed target breaks (measured: `npx skills add -g` into a
+   symlinked skills directory produced dead links). See `references/traps.md`.
 
 ## Reporting usage
 

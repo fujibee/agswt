@@ -95,8 +95,8 @@ delete the source. Two reasons this is not excessive caution:
 | `settings.json` | **No** | Rewritten via temp-file-and-rename; the link is replaced by a real file |
 | `.claude.json` | **No** | Same, and it is written constantly |
 | `CLAUDE.md` | Yes | Read-only in practice; one source of truth is the point |
-| `commands/` | Yes | Installers add files here; every profile should see them |
-| `skills/` | Yes | Same |
+| `commands/` | **Per entry only** | Real directory; each entry is an absolute symlink. See below |
+| `skills/` | **Per entry only** | Same — a directory symlink breaks installers (traps #15) |
 
 A symlinked `settings.json` does not fail loudly. It works until the client next
 writes, then the profile quietly has its own copy and stops tracking the
@@ -104,10 +104,13 @@ original.
 
 ## Shared originals — where the symlinks point
 
-`CLAUDE.md`, `commands/`, and `skills/` are symlinked, not copied, so every
-profile reads one source of truth. That source is **the default directory,
-`~/.claude`**, unless `create-profile --shared <dir>` names another. The
-choice is printed at creation time.
+`CLAUDE.md` is symlinked as a file. `skills/` and `commands/` are **real
+directories whose entries are absolute symlinks** — never a symlink of the
+directory itself: installers write into these directories and compute
+relative link targets against the logical path, so a directory symlink makes
+every install land as a dead link (traps #15). The shared source is **the
+default directory, `~/.claude`**, unless `create-profile --shared <dir>`
+names another. The choice is printed at creation time.
 
 `settings.json` is the opposite: **always a copy, never a symlink** (the
 client rewrites it with a temp-file-and-rename that would materialize the

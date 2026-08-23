@@ -145,16 +145,35 @@ if true; then
     fi
   done
 
-  # SYMLINKED, because one source of truth is the point: an installer that
-  # adds a command or a skill should reach every profile at once. These are
-  # read in practice, not rewritten in place.
-  for p in CLAUDE.md commands skills; do
-    if [ -e "$SHARED/$p" ]; then
-      # Link to the ORIGINAL, following a source that is itself a link, so a
-      # chain of profiles does not end up pointing at each other.
-      target="$(cd "$(dirname "$SHARED/$p")" && pwd -P)/$(basename "$p")"
-      [ -L "$SHARED/$p" ] && target="$(readlink "$SHARED/$p")"
-      ln -s "$target" "$DIR/$p" && ok "symlinked $p -> $target"
+  # CLAUDE.md is SYMLINKED as a file: one source of truth, read not rewritten.
+  if [ -e "$SHARED/CLAUDE.md" ]; then
+    target="$(cd "$(dirname "$SHARED/CLAUDE.md")" && pwd -P)/CLAUDE.md"
+    [ -L "$SHARED/CLAUDE.md" ] && target="$(readlink "$SHARED/CLAUDE.md")"
+    ln -s "$target" "$DIR/CLAUDE.md" && ok "symlinked CLAUDE.md -> $target"
+  else
+    note "$SHARED/CLAUDE.md not present, skipped"
+  fi
+
+  # skills/ and commands/ are REAL DIRECTORIES whose entries are absolute
+  # symlinks -- never a symlink of the directory itself. Installers (e.g.
+  # `npx skills add`) write new entries into these directories and compute
+  # relative link targets against the LOGICAL path; written through a
+  # directory symlink, the file lands at the physical location where that
+  # relative target resolves somewhere else entirely (measured: dead links).
+  # A real directory keeps installs local to this profile and correct; the
+  # per-entry links still give every existing shared item one source of truth.
+  for p in commands skills; do
+    if [ -d "$SHARED/$p" ]; then
+      # Resolve the shared side to its PHYSICAL path first, so entries link
+      # to originals even when $SHARED/$p is itself a link.
+      srcdir="$(cd "$SHARED/$p" && pwd -P)"
+      mkdir -p "$DIR/$p"
+      n=0
+      for item in "$srcdir"/* "$srcdir"/.[!.]*; do
+        [ -e "$item" ] || [ -L "$item" ] || continue
+        ln -s "$item" "$DIR/$p/$(basename "$item")" && n=$((n+1))
+      done
+      ok "created $p/ with $n absolute links into $srcdir"
     else
       note "$SHARED/$p not present, skipped"
     fi
@@ -168,9 +187,18 @@ for f in settings.json remote-settings.json; do
   [ -e "$DIR/$f" ] || continue
   [ -L "$DIR/$f" ] && warn "$f is a symlink — it must be a real file; the client will replace it on first write"
 done
-for p in CLAUDE.md commands skills; do
+if [ -e "$DIR/CLAUDE.md" ] && [ ! -L "$DIR/CLAUDE.md" ]; then
+  warn "CLAUDE.md is a real copy — it should be a symlink so there is one source of truth"
+fi
+for p in commands skills; do
   [ -e "$DIR/$p" ] || continue
-  [ -L "$DIR/$p" ] || warn "$p is a real copy — it should be a symlink so installers reach every profile"
+  if [ -L "$DIR/$p" ]; then
+    warn "$p is a directory symlink — installers writing through it produce dead links; make it a real directory of per-entry links"
+  else
+    broken=0
+    for l in "$DIR/$p"/*; do [ -L "$l" ] && [ ! -e "$l" ] && broken=$((broken+1)); done
+    [ "$broken" -gt 0 ] && warn "$p has $broken broken links"
+  fi
 done
 
 # ------------------------------------------------- step 4: stop_and_hand_off

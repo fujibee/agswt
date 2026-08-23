@@ -51,7 +51,10 @@ creates the group, and the report shows the structure.
 Two purposes: different projects should run on different accounts, and you
 want to know how much of every subscription is left. The model that serves
 both: **an account is assigned to a profile**, and **a directory is bound to a
-profile** — everything under that directory is then held to that account. A
+profile** — everything under that directory is then held to that account.
+The assignment is just the sign-in: to switch a profile to a different
+account, sign in again from any session running on it, and every bound
+directory follows. A
 profile can also exist only to be watched, holding an account whose remaining
 quota you read but never spend.
 

@@ -36,7 +36,8 @@ operations:
         actions:
           - "Copy settings.json from an existing profile or the default dir (COPY, never symlink)"
           - "Copy remote-settings.json if the source has one"
-          - "Symlink CLAUDE.md, commands/ and skills/ to the shared originals"
+          - "Symlink CLAUDE.md (as a file) to the shared original"
+          - "Create commands/ and skills/ as REAL directories; link each entry absolutely (a directory symlink breaks installers — traps #15)"
 
       - step: 4
         name: stop_and_hand_off

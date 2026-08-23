@@ -271,3 +271,32 @@ as context under whichever account is signed in now). Your own files, your
 own accounts. Note the *tooling* around the continued session — settings,
 CLAUDE.md, MCP servers — is the new profile's, so behavior may differ even
 though the conversation is the same.
+
+---
+
+## 15. A symlinked skills directory breaks skill installers
+
+**Symptom.** After `npx skills add -g`, the skill is listed as installed but
+never loads; the link the installer created points at a path that does not
+exist (e.g. `../../../.agents/skills/...` resolving outside your home).
+
+**Cause.** The profile's `skills/` was itself a symlink to a shared directory.
+The installer computes a *relative* link target against the logical parent
+path, but writing through a directory symlink lands the entry at the
+*physical* location — a different depth, so the relative target walks past
+the wrong root. The installer's code is correct for real directories, which
+is what every normal setup has; the directory symlink is what breaks it.
+
+**Fix.** Share per entry, not per directory: `skills/` (and `commands/`) are
+real directories whose entries are absolute symlinks to the shared originals.
+`create-profile` builds them that way. To repair an existing profile:
+
+```bash
+rm <profile>/skills            # the directory symlink only
+mkdir <profile>/skills
+for s in ~/.claude/skills/*; do ln -s "$s" <profile>/skills/"$(basename "$s")"; done
+```
+
+The trade-off is honest: a shared entry added *outside* an installer no longer
+appears in every profile automatically — the installer (which installs
+globally per real directory) is the distribution mechanism now.
