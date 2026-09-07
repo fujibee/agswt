@@ -14,8 +14,10 @@ For Anthropic's official position on holding multiple accounts, see
 [Where this stands with Anthropic's terms](#where-this-stands-with-anthropics-terms)
 below.
 
-Works with **Claude Code**. Codex support is researched but not implemented —
-see [`codex-notes.md`](skills/agswt/references/codex-notes.md).
+Works with **Claude Code** and **Codex**: profiles, per-directory binding and
+the usage report cover both; moving existing history is Claude-only (Codex
+keeps its thread history in a database — see
+[`codex-notes.md`](skills/agswt/references/codex-notes.md)).
 
 ## Install
 
@@ -37,14 +39,18 @@ language:
 3. **Launch `claude` in that directory.** It asks you to sign in, once — that
    browser OAuth flow is the real sign-in, and only you can complete it.
    (Signing in earlier by CLI does not skip this screen — measured — so the
-   flow simply does not bother.)
+   flow simply does not bother.) A Codex profile is signed in by CLI instead:
+   `CODEX_HOME=<dir> codex login`.
 4. **Done.** Everything under that directory now runs on that account —
    nothing to remember per session. Ask for a `report` any time. An account
    you only want to *watch* is the one exception: sign it in by CLI, since
    it is never launched.
 
 Profile names nest: `work/acme`, `clients/x` — a `/` in the name simply
-creates the group, and the report shows the structure.
+creates the group, and the report shows the structure. A name is shared by
+the two tools: **"Create a Codex profile `work/acme` too"** gives the same
+name a Codex half, and binding the directory then sets `CODEX_HOME` beside
+`CLAUDE_CONFIG_DIR`.
 
 ## Why
 
@@ -58,30 +64,32 @@ directory follows. A
 profile can also exist only to be watched, holding an account whose remaining
 quota you read but never spend.
 
-Underneath, Claude Code keeps exactly one logged-in account per config directory, selected
-by `CLAUDE_CONFIG_DIR` (default `~/.claude`). That is the whole isolation
+Underneath, each tool keeps exactly one logged-in account per config directory, selected
+by `CLAUDE_CONFIG_DIR` (default `~/.claude`) for Claude Code and `CODEX_HOME`
+(default `~/.codex`) for Codex. That is the whole isolation
 mechanism. No containers, no VMs, and no signing out
 to switch. What makes it awkward in practice is everything around it: which files
 constitute an account, why a copied project loses half its history, and why a
 perfectly healthy account reports itself as signed out.
 
-Profiles live under **`~/.claude_profiles`** by default; set
-`AGSWT_PROFILES_ROOT` to keep them somewhere else — every script reads the
-same variable, so the location changes in one place or not at all.
+Profiles live under **`~/.claude_profiles`** (Claude) and
+**`~/.codex_profiles`** (Codex) by default; set `AGSWT_PROFILES_ROOT` and
+`AGSWT_CODEX_PROFILES_ROOT` to keep them somewhere else — every script reads
+the same variables, so a location changes in one place or not at all.
 
 `agswt` is that knowledge, written down and executable.
 
 ## What it does
 
-| Operation | What it does |
-|---|---|
-| `create-profile` | New profile, then stops and prints the sign-in command |
-| `verify` | Confirm a profile is actually signed in |
-| `migrate-workspace` | Move one project's data between profiles |
-| `wire-direnv` | Bind a directory to a profile via `.envrc` |
-| `rename-workspace` | Make a stored slug follow a moved directory |
-| `doctor` | Check the known failure modes |
-| `report` | Usage across every profile |
+| Operation | What it does | Tools |
+|---|---|---|
+| `create-profile` | New profile, then stops and prints the sign-in command | Claude, Codex |
+| `verify` | Confirm a profile is actually signed in, and as whom | Claude, Codex |
+| `migrate-workspace` | Move one project's data between profiles | Claude |
+| `wire-direnv` | Bind a directory to a profile via `.envrc` | both at once |
+| `rename-workspace` | Make a stored slug follow a moved directory | Claude |
+| `doctor` | Check the known failure modes | Claude, Codex |
+| `report` | Usage across every profile | Claude, Codex |
 
 ## A sample of what it knows
 
@@ -103,6 +111,12 @@ same variable, so the location changes in one place or not at all.
   so every glob misses them.
 - `settings.json` must never be symlinked: it is rewritten with a
   temp-file-and-rename that replaces the link with a real file.
+- Codex usage is read the same way — by asking the unmodified `codex` binary
+  (its app server, over stdio) — never by opening `auth.json`, and never by
+  scraping the rate-limit snapshots in the session logs: one rate-limit
+  reset makes every snapshot written before it wrong.
+- `codex login status` says logged-in-or-not, never as whom; the account
+  behind a Codex profile comes from the app server too.
 
 The full list, with symptoms and fixes, is in
 [`skills/agswt/references/traps.md`](skills/agswt/references/traps.md).
@@ -167,6 +181,16 @@ Terms change, and Anthropic reserves the right to enforce its restrictions
 without notice. This section describes the documents as of the date above;
 if you rely on it, read the linked sources.
 
+**And with OpenAI's.** The Codex side is built on the same principle: the
+unmodified `codex` binary reads its own credential, and agswt reads the
+signed-in user's own account through it. The Codex lead has
+[said publicly](https://x.com/thsottiaux/status/2090675027670978569)
+(2026-08-21) that what is not allowed is "converting a subscription into api
+traffic — often shared with several users"; agswt re-serves nothing. OpenAI's
+consumer terms also prohibit circumventing rate limits, and agswt does not
+change what any plan gives you. Details in
+[`codex-notes.md`](skills/agswt/references/codex-notes.md).
+
 ## Alternatives
 
 Profile switching over `CLAUDE_CONFIG_DIR` is a small genre — at least ten
@@ -184,6 +208,8 @@ What sets agswt apart, as far as we have surveyed:
   remaining quota read or swap the OAuth credential themselves; agswt only ever
   asks the unmodified `claude` binary. The terms section above is why that
   difference matters.
+- **It covers Codex in the same report.** Same profile names, same `.envrc`,
+  one table across both subscriptions.
 - **It moves history.** `migrate-workspace` carries an existing project's
   transcripts, memory, both MCP scopes, and sidecar directories between
   profiles with per-category count verification. Switchers decide where *new*
@@ -194,7 +220,8 @@ What sets agswt apart, as far as we have surveyed:
 ## Requirements
 
 - macOS or Linux
-- Claude Code
+- Claude Code and/or Codex (codex-cli 0.153 or later for the usage report:
+  it needs the app server's `account/rateLimits/read`)
 - Optional: `direnv` for automatic per-directory switching, `gh` to pin a GitHub
   identity alongside each account
 

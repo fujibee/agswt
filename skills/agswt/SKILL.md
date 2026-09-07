@@ -1,6 +1,6 @@
 ---
 name: agswt
-description: Create and switch between per-account profiles for Claude Code, migrate existing workspaces between them, wire direnv so a directory selects its own account, and report subscription usage across every account. Use when someone runs more than one Claude subscription on one machine, asks to separate accounts per project, needs to move a project's history to a different account, or wants to see how much of each plan is used.
+description: Create and switch between per-account profiles for Claude Code and Codex, migrate existing Claude workspaces between them, wire direnv so a directory selects its own accounts, and report subscription usage across every account of both tools. Use when someone runs more than one Claude or ChatGPT subscription on one machine, asks to separate accounts per project, needs to move a project's history to a different account, or wants to see how much of each plan is used.
 ---
 
 # agswt
@@ -17,7 +17,8 @@ Two purposes: **different projects should run on different accounts**, and
 The model that serves both: **an account is assigned to a profile.** The
 assignment is just the sign-in, so changing it is signing in again: run
 `/login` with the other account in any Claude Code session running on that
-profile, and every directory bound to the profile follows. Create a
+profile (`codex login` for a Codex half), and every directory bound to the
+profile follows. Create a
 profile and sign an account into it — a profile may also exist only to be
 watched, holding an account whose remaining quota you read but never spend.
 To actually use a profile, bind a directory to it: everything under that
@@ -26,17 +27,24 @@ what keeps a project from quietly running on the wrong account.
 
 ## The mechanism underneath
 
-Claude Code keeps **exactly one logged-in account per config directory**,
-selected by `CLAUDE_CONFIG_DIR` (default `~/.claude`). That is the entire
-isolation mechanism — no containers, no VMs, no signing out to switch.
+Both tools keep **exactly one logged-in account per config directory**,
+selected by an environment variable. That is the entire isolation mechanism —
+no containers, no VMs, no signing out to switch.
 
-A **profile** is one such directory plus the account signed into it. Profiles
-live under **`~/.claude_profiles`** by default; set `AGSWT_PROFILES_ROOT` to
-put them elsewhere. One
-directory per account is all you need — `report` reads the profiles you already
-work in.
+| Tool | Variable | Default | Profiles root (override) |
+|---|---|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` | `~/.claude` | `~/.claude_profiles` (`AGSWT_PROFILES_ROOT`) |
+| Codex | `CODEX_HOME` | `~/.codex` | `~/.codex_profiles` (`AGSWT_CODEX_PROFILES_ROOT`) |
 
-Profile names may be nested (`work/oma`, `clients/acme`): a directory holding a
+A **profile** is one such directory plus the account signed into it. One
+directory per account is all you need — `report` reads the profiles you
+already work in. A profile **name** is shared across the two tools:
+`work/acme` may have a Claude half under the Claude root and a Codex half
+under the Codex root, and `wire-direnv work/acme` binds a directory to
+whichever halves exist. Codex specifics — what its home contains, how it is
+read, what is not done for it — are in `references/codex-notes.md`.
+
+Profile names may be nested (`work/acme`, `clients/acme`): a directory holding a
 `.claude.json` is a profile, a directory without one is a group, and discovery
 recurses. `create-profile` accepts nested names and creates missing parent
 directories itself — a parent needs no preparation and may even be a profile
@@ -57,10 +65,11 @@ location. See `references/traps.md`.
 Creating a profile changes nothing by itself — a profile only matters once
 something runs against it. The path is:
 
-    create-profile
+    create-profile [--tool codex]
         → wire-direnv <profile> --dir <dir>   for a directory that should use it
-        → migrate-workspace --to <profile>    for an existing project moving in
+        → migrate-workspace --to <profile>    for an existing Claude project moving in
         → launch claude in that directory — it asks you to sign in, once
+          (a Codex half is signed in by CLI instead: CODEX_HOME=<dir> codex login)
         → report                              to see it among the others
 
 If an agent session was already running while it wired the directory, that
@@ -82,6 +91,13 @@ new account, which is why the question exists instead of automation.
 `wire-direnv --migrate` does the same in one step for script users; without
 the flag it detects and prints what it found, as a backstop for flows that
 skipped the question.
+
+One consequence of migrating the live conversation: the source transcript
+keeps growing after the copy (the migration report itself is appended to
+it), so the copy is a snapshot that misses the tail. After the `exit`,
+re-run the same `migrate-workspace` once to sync the tail — it is
+copy-only, so repeating it is always safe (measured: +10.8KB of tail
+between copy and exit).
 
 Sign-in happens at the END, at the first interactive launch, not up front.
 Measured twice: a profile signed in via `claude auth login` beforehand is
@@ -112,15 +128,15 @@ both are named flags — two positionals that read naturally in either order
 make the caller guess, and a guess that runs is worse than one that fails.
 Everything else (directories, slugs, paths) is always a flag.
 
-| Operation | What it does |
-|---|---|
-| `create-profile` | New work profile, then **stops** and prints the sign-in command |
-| `verify` | Confirm a profile is actually signed in |
-| `migrate-workspace` | Move one project's data between profiles |
-| `wire-direnv` | Bind a directory to a profile via `.envrc` |
-| `rename-workspace` | Make a stored slug follow a moved directory |
-| `doctor` | Check for the failure modes in `references/traps.md` |
-| `report` | Usage across all profiles |
+| Operation | What it does | Tools |
+|---|---|---|
+| `create-profile` | New work profile, then **stops** and prints the sign-in command | Claude, Codex (`--tool codex`) |
+| `verify` | Confirm a profile is actually signed in, and as whom | Claude, Codex |
+| `migrate-workspace` | Move one project's data between profiles | Claude only |
+| `wire-direnv` | Bind a directory to a profile via `.envrc` | both halves at once |
+| `rename-workspace` | Make a stored slug follow a moved directory | Claude only |
+| `doctor` | Check for the failure modes in `references/traps.md` | Claude, Codex |
+| `report` | Usage across all profiles | Claude, Codex (`--tool` to restrict) |
 
 ## Never attempt the login yourself
 
@@ -178,10 +194,17 @@ Two rules that are not negotiable:
 `report` prints one row per profile: plan, short and long window percentages,
 and when each resets.
 
-Run `scripts/report.sh` — do not hand-build the loop from the steps below;
-an agent improvising it loses minutes to timeouts and parse edge cases the
-script already handles (closed stdin, log lines after the JSON, per-profile
-timeout with one retry).
+Run `scripts/report.sh --md` and **paste its output to the person unchanged**
+— a Markdown table, one row per account, with the directories folded into a
+row listed underneath. That table is the preferred form: rewriting the
+numbers into prose or a hand-made list loses the alignment that makes four
+accounts comparable at a glance, and every rewrite comes out differently.
+Add your own remarks *after* the table, not inside it. (`--json` exists for
+machines; the flagless form is the terminal rendering.)
+
+Do not hand-build the loop from the steps below either; an agent improvising
+it loses minutes to timeouts and parse edge cases the script already handles
+(closed stdin, log lines after the JSON, per-profile timeout with one retry).
 
 **Ask the binary. Never read the credential yourself.**
 
@@ -214,6 +237,27 @@ not been measured.
 Never call the OAuth token endpoint directly. Refresh tokens rotate, and a
 rotation performed behind the client's back signs that account out.
 
+### Codex rows
+
+Codex has no `/usage` command; it has an app server. `report` runs
+`scripts/codex-ask.py`, which starts `codex app-server` over stdio with
+`CODEX_HOME=<dir>` and asks `account/read` (e-mail, plan) and
+`account/rateLimits/read` (the 5h and 7d windows with reset epochs, one
+entry per limit id, plus the monthly credit pool where the plan has one),
+then stops it. A second limit id — the Spark model has its own windows —
+is its own row under the same account; a plan with only a weekly window is
+read correctly, not a missing 5h. Same footing as the Claude side: the vendor's own binary reads its
+own credential, and this skill never opens `auth.json`. Two profiles answer
+in under a second together.
+
+Do not read the `rate_limits` snapshots out of the session rollouts instead,
+although they are there: a rate-limit reset makes every snapshot written
+before it wrong, and the newest one is right only by luck of which session
+spoke last (measured 2026-09-05). And know that the read is not write-free —
+the app server touches its sqlite stores under the home, and populates an
+empty one — while creating no session. `references/codex-notes.md` has the
+exchange, the failure shapes, and the measurements.
+
 ## Optional pieces
 
 `agswt` works without any of these; wire them in if they are present.
@@ -238,7 +282,26 @@ rotation performed behind the client's back signs that account out.
 - **A terminal multiplexer** — one session per profile keeps windows separate.
 - **`gh`** — pin a GitHub identity per directory alongside the account.
 
-## Not yet supported
+## Running this skill from inside Codex
 
-Codex uses the same one-account-per-directory model via `CODEX_HOME`, and the
-research for adding it is in `references/codex-notes.md`. It is not implemented.
+The scripts work when Codex drives them, with one condition: **Codex's
+sandbox must be lifted for the commands that write outside the workspace**
+(`report`, `wire-direnv`, `create-profile`). Inside the sandbox the app
+server cannot open its sqlite stores under `CODEX_HOME`, the claude binary
+cannot write its state, and `direnv allow` cannot record the allow under
+`~/.local/share/direnv` — measured 2026-09-06, every one reported as a
+failure whose status line now carries the binary's own last stderr line.
+Ask for the command to run unsandboxed rather than reading those failures
+as a sign-in problem.
+
+## Codex: what is and is not covered
+
+Covered: profiles (`create-profile --tool codex`), binding (`wire-direnv`
+writes `CODEX_HOME` beside `CLAUDE_CONFIG_DIR`), `doctor`, and `report`.
+
+Not covered, on purpose: moving Codex history. Codex is moving its thread
+history into sqlite (`codex migrate-rollouts`), so a file copy of `sessions/`
+is not a migration but a database merge; `migrate-workspace` and
+`rename-workspace` stay Claude-only, and `wire-direnv` says so when it binds
+a Codex half. `references/codex-notes.md` has the layout, the sign-in route,
+the app-server exchange, and every measurement behind this.

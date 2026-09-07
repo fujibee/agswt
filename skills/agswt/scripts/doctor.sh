@@ -14,6 +14,8 @@ DIR="${1:-$PWD}"
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/agswt-common.sh"
 CLAUDE_PROFILES="$(agswt_profiles_root)"
+CODEX_PROFILES="$(agswt_codex_profiles_root)"
+CODEX_DEFAULT="$AGSWT_CODEX_DEFAULT"
 PROFILES_ROOT_OK=1
 [ -d "$CLAUDE_PROFILES" ] || PROFILES_ROOT_OK=0
 AGSWT_VERSION="$(cat "$_here/../VERSION" 2>/dev/null | tr -d '[:space:]')"
@@ -43,6 +45,16 @@ resolve() {
 
 ccd="$(resolve CLAUDE_CONFIG_DIR)"
 note "CLAUDE_CONFIG_DIR = ${ccd:-<unset, using ~/.claude>}"
+ch="$(resolve CODEX_HOME)"
+note "CODEX_HOME        = ${ch:-<unset, using ~/.codex>}"
+# Unlike CLAUDE_CONFIG_DIR, pointing CODEX_HOME at its own default is harmless
+# (measured 2026-09-05, codex-cli 0.153.4: identical answer to unset), so no
+# warning for that case here.
+if [ -n "$ch" ] && [ ! -d "$ch" ]; then
+  warn "CODEX_HOME points at $ch, which does not exist. Codex will create an empty, signed-out home there on first launch."
+elif [ -n "$ch" ] && ! agswt_is_codex_profile "$ch"; then
+  warn "CODEX_HOME points at $ch, which holds neither auth.json nor config.toml — not a profile, and not signed in."
+fi
 
 # Setting the variable explicitly to the default path is NOT a no-op: the client
 # then looks for the hashed keychain item, which only exists for non-default
@@ -130,23 +142,19 @@ if [ "$(uname -s)" = "Darwin" ]; then
   # ------------------------------------------------------------------ keychain
 
   head_ "Keychain"
-  # Probe an item unrelated to any AI tool: if that also fails, the keychain is
-  # locked and no account is actually signed out.
-  security find-generic-password -s "AirPort" -w >/dev/null 2>&1
-  rc=$?
-  if [ "$rc" -eq 36 ]; then
-    # The check is still worth making; only its premise changed. Usage no
-    # longer comes from a keychain item we read ourselves -- it comes from the
-    # claude binary -- but that binary reads its OWN credential from the
-    # keychain, so a locked keychain still stops a usage reading. Says what
-    # actually fails now, and deliberately says nothing about non-GUI sessions:
-    # whether the binary path avoids that is not measured yet.
-    warn "login keychain is locked (exit 36 = errSecInteractionNotAllowed). The claude binary cannot read its own credential while it is locked, so every usage reading fails and the account is reported as signed out. Fix: security unlock-keychain ~/Library/Keychains/login.keychain-db"
-  elif [ "$rc" -eq 44 ]; then
-    ok "keychain readable (probe item absent, which is fine)"
-  else
-    ok "keychain readable"
-  fi
+  # NOT PROBED, on purpose. Earlier versions read an unrelated item's secret
+  # (`security find-generic-password -s AirPort -w`) to see whether the login
+  # keychain was locked: exit 36 meant locked. That item lives in the SYSTEM
+  # keychain, so on an UNLOCKED machine the same command raised an
+  # administrator-password dialog ("security wants to use the System
+  # keychain") and hung this script for as long as nobody answered it --
+  # measured 2026-09-05. A check that is silent in the broken state and
+  # prompts for admin in the healthy one is worse than no check. And there is
+  # no prompt-free way to ask: `security show-keychain-info` reports timeout
+  # settings, not lock state, and every secret read can prompt.
+  note "lock state is not probed (every way to ask can raise a password dialog)"
+  note "if report shows EVERY account signed out at once, the keychain is locked:"
+  note "  security unlock-keychain ~/Library/Keychains/login.keychain-db"
 fi
 
 # ------------------------------------------------------------------ profiles
@@ -158,7 +166,7 @@ list_dirs() { [ -d "$1" ] && find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/nu
 # ONE RULE for what a profile is, shared with report: a directory holding
 # .claude.json IS one; a directory without one is a group whose children are
 # searched. Both can be true at once -- a group that is itself signed in --
-# and that needs no case of its own. Structured names ("work/oma") fall out of
+# and that needs no case of its own. Structured names ("work/acme") fall out of
 # it, so nothing here has to know which names are groups.
 #
 # A profile's OWN subdirectories are skipped: descending into them reaches
@@ -228,6 +236,42 @@ done <<EOF
 $(all_profiles "$CLAUDE_PROFILES")
 EOF
 
+
+# Codex profiles: the default home plus the Codex root. Discovery is the
+# shared rule in agswt-common.sh, so this list is the one report prints.
+codex_label() {
+  case "$1" in
+    "$CODEX_DEFAULT") printf '(default)' ;;
+    "$CODEX_PROFILES"/*) printf '%s' "${1#"$CODEX_PROFILES"/}" ;;
+    *) basename "$1" ;;
+  esac
+}
+found_codex=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  found_codex=1
+  name="$(codex_label "$p")"
+  if [ -f "$p/auth.json" ]; then
+    # The credential is plaintext. Codex writes it 0600; a copy made with
+    # default umask is world-readable, and nothing else will ever say so.
+    mode="$(stat -f %Lp "$p/auth.json" 2>/dev/null || stat -c %a "$p/auth.json" 2>/dev/null)"
+    [ "$mode" = "600" ] || warn "codex/$name: auth.json is mode ${mode:-?}, not 600 — the tokens inside are plaintext. Fix: chmod 600 $p/auth.json"
+    state="signed in"
+  else
+    state="not signed in (CODEX_HOME=$p codex login)"
+  fi
+  if [ -L "$p/config.toml" ]; then
+    warn "codex/$name: config.toml is a symlink. Codex edits it in place (project trust, hook state), so those edits land in the original. Use a copy."
+  fi
+  for d in prompts skills; do
+    [ -L "$p/$d" ] && warn "codex/$name: $d is a directory symlink — installers writing through it produce dead links; make it a real directory of per-entry links"
+  done
+  n_sess=$(find "$p/sessions" -name 'rollout-*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
+  note "codex/$name — $state, $n_sess session rollout(s)"
+done <<EOF
+$(agswt_is_codex_profile "$CODEX_DEFAULT" && printf '%s\n' "$CODEX_DEFAULT"; agswt_codex_profiles)
+EOF
+[ "$found_codex" -eq 1 ] || note "no Codex profiles (no $CODEX_DEFAULT, nothing under $CODEX_PROFILES)"
 
 if [ "$found_any" -eq 1 ]; then
   :

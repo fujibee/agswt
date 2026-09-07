@@ -1,48 +1,79 @@
 #!/usr/bin/env bash
 # agswt report — subscription usage for every account on this machine.
 #
-# Reads each profile by asking the claude binary, so this script never touches
-# a credential and never calls the usage endpoint itself:
+# Reads each profile by asking the vendor's own binary, so this script never
+# touches a credential and never calls a usage endpoint itself:
 #
 #     CLAUDE_CONFIG_DIR=<dir> claude -p "/usage" --output-format json
+#     CODEX_HOME=<dir>        codex app-server   (account/read, account/rateLimits/read
+#                                                 over stdio -- see codex-ask.py)
 #
 # Exists as a script rather than as workflow steps because an agent improvising
 # these calls is slow and fragile: one run assembled them by hand and spent
-# minutes on timeouts and retries. The invocation below is fixed on purpose.
+# minutes on timeouts and retries. The invocations are fixed on purpose.
 #
-# Usage: report.sh [--json] [--dir PATH]...
+# Usage: report.sh [--md | --json] [--tool claude|codex] [--dir PATH]...
+#   --md    a Markdown table — THE FORM TO SHOW A PERSON. Paste it as is.
+#   --json  machine-readable rows
+#   --tool  restrict to one tool (default: every tool that has a profile here)
+#   --dir   report one directory; its tool is read from its contents
 set -uo pipefail
 
 CLAUDE_DEFAULT="$HOME/.claude"
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/agswt-common.sh"
 CLAUDE_PROFILES="$(agswt_profiles_root)"
+CODEX_PROFILES="$(agswt_codex_profiles_root)"
+CODEX_DEFAULT="$AGSWT_CODEX_DEFAULT"
 AGSWT_VERSION="$(cat "$_here/../VERSION" 2>/dev/null | tr -d '[:space:]')"
 
 AS_JSON=0
-agswt_require_profiles_root >/dev/null || exit 2
-
-DIRS=()
+AS_MD=0
+TOOL=all
+DIRS=()        # claude config directories
+CODEX_DIRS=()  # codex homes
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) AS_JSON=1; shift ;;
-    --dir)  DIRS+=("${2:?--dir needs a path}"); shift 2 ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    --md)   AS_MD=1; shift ;;
+    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) printf 'report: --tool must be claude or codex, not %s\n' "$TOOL" >&2; exit 2 ;; esac ;;
+    --dir)  d="${2:?--dir needs a path}"; shift 2
+            # A directory names its own tool by what it holds. Guessing from
+            # the flag alone would send a Codex home to the claude binary,
+            # which answers "sign in" for a perfectly good account.
+            if [ -f "$d/.claude.json" ]; then DIRS+=("$d")
+            elif agswt_is_codex_profile "$d"; then CODEX_DIRS+=("$d")
+            else DIRS+=("$d"); fi ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) printf 'report: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
-[ "$AS_JSON" -eq 1 ] || printf 'agswt report — version %s\n' "${AGSWT_VERSION:-unknown}"
+[ "$AS_JSON" -eq 1 ] || [ "$AS_MD" -eq 1 ] || printf 'agswt report — version %s\n' "${AGSWT_VERSION:-unknown}"
 
-if [ "${#DIRS[@]}" -eq 0 ]; then
+# Whether directories were named on the command line, decided BEFORE discovery
+# fills either list. Testing "both lists empty" at each discovery step instead
+# meant that finding the Claude profiles switched the Codex discovery off.
+EXPLICIT=0
+[ "$(( ${#DIRS[@]} + ${#CODEX_DIRS[@]} ))" -gt 0 ] && EXPLICIT=1
+
+# The Claude root is required only when Claude is the ONLY tool asked for. A
+# machine that runs Codex alone has no ~/.claude_profiles and must not be
+# told to create one before it can see its Codex accounts.
+if [ "$TOOL" = claude ]; then
+  agswt_require_profiles_root >/dev/null || exit 2
+fi
+
+if [ "$EXPLICIT" -eq 0 ] && [ "$TOOL" != codex ]; then
   [ -d "$CLAUDE_DEFAULT" ] && DIRS+=("$CLAUDE_DEFAULT")
   # ONE RULE, applied recursively: a directory holding .claude.json IS a
   # profile; a directory without one is a group, and its children are searched.
   # Both can be true of the same directory -- a group that is itself signed in
   # -- and that falls out of the rule rather than needing a case of its own.
   #
-  # Structured names come from this: <profiles-root>/work/oma is the profile
-  # "work/oma", and nothing has to know that "work" is special.
+  # Structured names come from this: <profiles-root>/work/acme is the profile
+  # "work/acme", and nothing has to know that "work" is special.
   #
   # A profile's OWN subdirectories are not candidates. Descending into them
   # found 130+ plugin and marketplace directories on this machine and drowned
@@ -98,26 +129,62 @@ EOF
   [ -z "$DEPTH_HITS" ] || printf '  [warn] stopped at depth %s, not searched: %s\n' \
     "$AGSWT_MAX_DEPTH" "$DEPTH_HITS"
 fi
-[ "${#DIRS[@]}" -gt 0 ] || { printf 'report: %s exists but holds no profiles\n' "$CLAUDE_PROFILES" >&2; exit 2; }
 
-python3 - "$AS_JSON" "$CLAUDE_DEFAULT" "$CLAUDE_PROFILES" "${DIRS[@]}" <<'PY'
+# Codex: the default home plus every profile under the Codex root. Discovery
+# lives in agswt-common.sh so that doctor and report cannot disagree about
+# what a Codex profile is.
+if [ "$EXPLICIT" -eq 0 ] && [ "$TOOL" != claude ]; then
+  agswt_is_codex_profile "$CODEX_DEFAULT" && CODEX_DIRS+=("$CODEX_DEFAULT")
+  while IFS= read -r d; do
+    [ -n "$d" ] && CODEX_DIRS+=("$d")
+  done <<EOF
+$(agswt_codex_profiles)
+EOF
+fi
+
+if [ "${#DIRS[@]}" -eq 0 ] && [ "${#CODEX_DIRS[@]}" -eq 0 ]; then
+  case "$TOOL" in
+    codex) printf 'report: no Codex profiles: neither %s nor anything under %s\n' "$CODEX_DEFAULT" "$CODEX_PROFILES" >&2 ;;
+    *)     printf 'report: no profiles found under %s (Claude) or %s (Codex)\n' "$CLAUDE_PROFILES" "$CODEX_PROFILES" >&2
+           [ -d "$CLAUDE_PROFILES" ] || agswt_require_profiles_root >/dev/null ;;
+  esac
+  exit 2
+fi
+# A Codex profile exists but the binary does not: say so once, and drop the
+# rows rather than printing one "did not run" per profile.
+if [ "${#CODEX_DIRS[@]}" -gt 0 ] && ! command -v codex >/dev/null 2>&1; then
+  printf '  [warn] %d Codex profile(s) found but no codex binary on PATH; Codex rows skipped\n' "${#CODEX_DIRS[@]}" >&2
+  CODEX_DIRS=()
+fi
+
+python3 - "$AS_JSON$AS_MD" "$CLAUDE_DEFAULT" "$CLAUDE_PROFILES" "$CODEX_DEFAULT" "$CODEX_PROFILES" "$_here" \
+  --claude "${DIRS[@]+"${DIRS[@]}"}" --codex "${CODEX_DIRS[@]+"${CODEX_DIRS[@]}"}" <<'PY'
 import json, os, re, subprocess, sys, datetime as dt
 
-as_json = sys.argv[1] == "1"
+as_json = sys.argv[1][0] == "1"
+as_md = sys.argv[1][1] == "1"
 default_dir = sys.argv[2]
 profiles_root = sys.argv[3]
-dirs = sys.argv[4:]
+codex_default = sys.argv[4]
+codex_root = sys.argv[5]
+here = sys.argv[6]
+dirs, codex_dirs = [], []
+bucket = None
+for a in sys.argv[7:]:
+    if a == "--claude": bucket = dirs; continue
+    if a == "--codex": bucket = codex_dirs; continue
+    bucket.append(a)
 
 
-def label(d):
+def label(d, tool="claude"):
     """How a profile is named to a person: its path under the profiles root,
-    so a nested profile reads as "work/oma" rather than an absolute path or a
+    so a nested profile reads as "work/acme" rather than an absolute path or a
     bare leaf that collides with its sibling group."""
     a = os.path.abspath(d)
-    root = os.path.abspath(profiles_root)
+    root = os.path.abspath(codex_root if tool == "codex" else profiles_root)
     if a.startswith(root + os.sep):
         return a[len(root) + 1:]
-    if a == os.path.abspath(default_dir):
+    if a == os.path.abspath(codex_default if tool == "codex" else default_dir):
         return "(default)"
     return a.replace(os.path.expanduser("~"), "~")
 
@@ -180,19 +247,25 @@ def ask(d, attempts=2):
     why = "no attempt made"
     for _ in range(attempts):
         try:
+            # stderr captured separately (never mixed into stdout, which is
+            # parsed): its last line is appended to a failure reason. From
+            # inside Codex's sandbox every profile came back "no quota line"
+            # and nothing said why (measured 2026-09-06).
             r = subprocess.run(
                 ["claude", "-p", "/usage", "--output-format", "json",
                  "--no-session-persistence"],
                 env=env_for(d), cwd=QUERY_CWD, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             why = f"timed out after {TIMEOUT}s"; continue
         except OSError as e:
             why = f"claude did not run ({e})"; continue
+        err_lines = [l.strip() for l in (r.stderr or "").splitlines() if l.strip()]
+        err_tail = (": " + re.sub(r"\x1b\[[0-9;]*m", "", err_lines[-1])[:200]) if err_lines else ""
         first = (r.stdout or "").strip().splitlines()
         if not first:
-            why = "no output"; continue
+            why = "no output" + err_tail; continue
         try:
             payload = json.loads(first[0])
         except ValueError:
@@ -208,7 +281,7 @@ def ask(d, attempts=2):
                 out[key] = (float(m.group(3)), m.group(4))
         if out:
             return out, None
-        why = "no quota line in the response"
+        why = "no quota line in the response" + err_tail
     return None, why
 
 
@@ -265,10 +338,14 @@ def fmt_reset(text):
     """Absolute time plus a countdown, degrading to the phrase itself.
 
     An unparseable phrase is printed verbatim rather than dropped: a locale
-    change should cost the countdown, not the line."""
+    change should cost the countdown, not the line. Codex hands over epoch
+    seconds instead of a phrase; those take the same path after conversion."""
     if not text:
         return "-"
-    t = parse_reset(text)
+    if isinstance(text, (int, float)):
+        t = dt.datetime.fromtimestamp(text).astimezone()
+    else:
+        t = parse_reset(text)
     if t is None:
         return text
     secs = int((t - dt.datetime.now().astimezone()).total_seconds())
@@ -284,7 +361,7 @@ rows = []
 for d in dirs:
     windows, why = ask(d)
     acct = account_of(d)
-    row = {"config_dir": d, "account": acct or label(d),
+    row = {"tool": "claude", "config_dir": d, "account": acct or label(d),
            "identified": acct is not None}
     # PLAN is not available: the subscription name lived in the credential
     # blob, which is no longer read, and the prose does not carry it. The
@@ -301,12 +378,76 @@ for d in dirs:
         row["status"] = "ok" if not gaps else "read, but no " + "/".join(gaps) + " line"
     rows.append(row)
 
+
+def ask_codex(cdirs):
+    """One codex-ask.py call for every Codex home; the JSON-RPC lives there."""
+    if not cdirs:
+        return []
+    cmd = [sys.executable, os.path.join(here, "codex-ask.py"),
+           "--timeout", str(TIMEOUT)] + cdirs
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True,
+                           timeout=TIMEOUT * (len(cdirs) + 1))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return [{"config_dir": d, "email": None, "plan": None, "five": None,
+                 "seven": None, "five_r": None, "seven_r": None,
+                 "status": f"codex-ask did not answer ({e})"} for d in cdirs]
+    out = []
+    for line in (r.stdout or "").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    # Every directory asked for gets a row, answered or not. A helper that
+    # died mid-list must not make the remaining accounts silently vanish.
+    seen = {o.get("config_dir") for o in out}
+    for d in cdirs:
+        if d not in seen:
+            out.append({"config_dir": d, "email": None, "plan": None, "five": None,
+                        "seven": None, "five_r": None, "seven_r": None,
+                        "status": "no answer from codex-ask"})
+    return out
+
+
+for a in ask_codex(codex_dirs):
+    d = a["config_dir"]
+    row = {"tool": "codex", "config_dir": d, "account": a["email"] or label(d, "codex"),
+           "identified": a["email"] is not None, "plan": a["plan"],
+           "five": a["five"], "seven": a["seven"],
+           "five_r": a["five_r"], "seven_r": a["seven_r"],
+           "limits": a.get("limits") or [], "credits": a.get("credits")}
+    if a["status"] == "not signed in":
+        row["status"] = f"not signed in — sign in with: CODEX_HOME={d} codex login"
+    elif a["status"] == "ok" or a["status"].startswith(("read, but", "limit reached")):
+        row["status"] = a["status"]
+    else:
+        row["status"] = f"usage unreadable ({a['status']})"
+    rows.append(row)
+    # A second limit id (measured 2026-09-07: the Spark model on Pro Lite has
+    # its own 5h and weekly windows) is its own row, named after the limit,
+    # under the same account -- the TUI's /status shows it as a separate
+    # block, and folding it into the account row would hide a model that
+    # is out while the main limit reads 0%.
+    for extra in row["limits"][1:]:
+        rows.append({"tool": "codex", "config_dir": d,
+                     "account": row["account"], "identified": row["identified"],
+                     "plan": a["plan"], "five": extra["five"], "seven": extra["seven"],
+                     "five_r": extra["five_r"], "seven_r": extra["seven_r"],
+                     "limits": [], "credits": None,
+                     "limit_name": extra["name"] or extra["limit_id"],
+                     "status": (f"limit reached: {extra['reached']}" if extra["reached"]
+                                else "ok")})
+
 # One line per ACCOUNT, not per directory -- but the directories folded into
 # each line are named. Several profiles signed into one account is a hygiene
 # problem worth seeing, and collapsing them silently is what hides it.
+# Keyed by tool AND account: the same e-mail on Claude and on Codex is two
+# subscriptions, not one.
 merged = {}
 for r in rows:
-    key = r["account"] if r["identified"] else "dir:" + r["config_dir"]
+    key = (r["tool"], r["account"] if r["identified"] else "dir:" + r["config_dir"],
+           r.get("limit_name"))
     if key in merged:
         merged[key]["dirs"].append(r["config_dir"])
         continue
@@ -318,8 +459,39 @@ if as_json:
     print(json.dumps(rows, indent=2, ensure_ascii=False))
     sys.exit(0)
 
+if as_md:
+    # The form a person reads. An agent that runs this and then rewrites the
+    # numbers into prose loses the alignment that makes four accounts
+    # comparable at a glance; so the table is produced here, once, and the
+    # instruction in SKILL.md is to paste it unchanged. Footnotes carry what
+    # a cell cannot: the directories folded into one account row.
+    print("| Account | Tool | Plan | 5h | 7d | 5h resets | 7d resets | Status |")
+    print("|---|---|---|---:|---:|---|---|---|")
+    notes, problems = [], 0
+    for r in rows:
+        f5 = "-" if r["five"] is None else f"{r['five']:.0f}%"
+        f7 = "-" if r["seven"] is None else f"{r['seven']:.0f}%"
+        status = "ok" if r["status"] == "ok" else r["status"].replace("|", "\\|")
+        if r["status"] != "ok":
+            problems += 1
+        tool = r["tool"] + (f" · {r['limit_name']}" if r.get("limit_name") else "")
+        print(f"| {r['account']} | {tool} | {r['plan'] or '-'} | {f5} | {f7} | "
+              f"{fmt_reset(r['five_r'])} | {fmt_reset(r['seven_r'])} | {status} |")
+        if len(r["dirs"]) > 1:
+            notes.append(f"- {r['account']} ({r['tool']}): same account in {len(r['dirs'])} profiles — "
+                         + ", ".join(label(d, r["tool"]) for d in r["dirs"]))
+        c = r.get("credits")
+        if c:
+            notes.append(f"- {r['account']} (codex): monthly credits {c['used']:,.0f} of "
+                         f"{c['limit']:,.0f} used ({c['remaining_percent']}% left), "
+                         f"resets {fmt_reset(c['resets_at'])}")
+    if notes:
+        print()
+        print("\n".join(notes))
+    sys.exit(1 if problems else 0)
+
 w = max([len(r["account"]) for r in rows] + [7])
-print(f"{'ACCOUNT'.ljust(w)}  {'PLAN':<6} {'5H':>5} {'7D':>5}  "
+print(f"{'ACCOUNT'.ljust(w)}  {'TOOL':<6} {'PLAN':<6} {'5H':>5} {'7D':>5}  "
       f"{'5H RESETS':<23} {'7D RESETS':<23} STATUS")
 problems = 0
 for r in rows:
@@ -328,11 +500,17 @@ for r in rows:
     status = "" if r["status"] == "ok" else r["status"]
     if status:
         problems += 1
-    print(f"{r['account'].ljust(w)}  {'-':<6} {f5:>5} {f7:>5}  "
+    print(f"{r['account'].ljust(w)}  {r['tool']:<6} {(r['plan'] or '-'):<6} {f5:>5} {f7:>5}  "
           f"{fmt_reset(r['five_r']):<23} {fmt_reset(r['seven_r']):<23} {status}".rstrip())
+    if r.get("limit_name"):
+        print(f"{'':<{w}}  ^ limit: {r['limit_name']}")
     if len(r["dirs"]) > 1:
         print(f"{'':<{w}}  same account in {len(r['dirs'])} profiles: "
-              + ", ".join(label(d) for d in r["dirs"]))
+              + ", ".join(label(d, r["tool"]) for d in r["dirs"]))
+    c = r.get("credits")
+    if c:
+        print(f"{'':<{w}}  monthly credits {c['used']:,.0f} of {c['limit']:,.0f} used "
+              f"({c['remaining_percent']}% left), resets {fmt_reset(c['resets_at'])}")
 
 sys.exit(1 if problems else 0)
 PY

@@ -13,16 +13,21 @@
 # command and exits; a profile it prepared is NOT ready, and it says so.
 #
 # Usage:
-#   create-profile.sh <name> [--from <profile>] [--shared <dir>] [--profiles-root <dir>]
-#     <name> may contain '/' for a nested profile: create-profile.sh work/oma
-#     --from    where settings.json is copied FROM   (default: ~/.claude)
-#     --shared  where CLAUDE.md/commands/skills link TO (default: ~/.claude)
+#   create-profile.sh <name> [--tool claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]
+#     <name> may contain '/' for a nested profile: create-profile.sh work/acme
+#     --tool    which tool's profile to create (default: claude). A Codex
+#               profile lives under the Codex root (~/.codex_profiles) under
+#               the SAME name, so "work/acme" can have both halves.
+#     --from    where settings.json / config.toml is copied FROM (default: the tool's default dir)
+#     --shared  where CLAUDE.md/commands/skills (AGENTS.md/prompts/skills) link TO (default: same)
 set -uo pipefail
 
 CLAUDE_DEFAULT="$HOME/.claude"
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/agswt-common.sh"
 CLAUDE_PROFILES="$(agswt_profiles_root)"
+CODEX_PROFILES="$(agswt_codex_profiles_root)"
+CODEX_DEFAULT="$AGSWT_CODEX_DEFAULT"
 AGSWT_VERSION="$(cat "$_here/../VERSION" 2>/dev/null | tr -d '[:space:]')"
 
 note()  { printf '  %s\n' "$*"; }
@@ -32,17 +37,19 @@ die()   { printf 'create-profile: %s\n' "$*" >&2; exit 2; }
 head_() { printf '\n== %s\n' "$*"; }
 
 usage() {
-  printf 'usage: create-profile.sh <name> [--from <profile>] [--shared <dir>] [--profiles-root <dir>]\n'
+  printf 'usage: create-profile.sh <name> [--tool claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]\n'
   printf '       <name> may contain / to nest under a group (parents are created)\n'
 }
 
-NAME=""; FROM=""; SHARED=""; SHARED_SET=""
+NAME=""; FROM=""; SHARED=""; SHARED_SET=""; TOOL=claude
 while [ $# -gt 0 ]; do
   case "$1" in
+    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) die "--tool must be claude or codex, not $TOOL" ;; esac ;;
     --from) FROM="${2:?--from needs a profile}"; shift 2 ;;
     --shared) SHARED="${2:?--shared needs a dir}"; SHARED_SET=1; shift 2 ;;
-    --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; CODEX_PROFILES="$CLAUDE_PROFILES"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     -*) die "unknown option: $1
 $(usage)" ;;
     *) [ -z "$NAME" ] || die "got 2 positional arguments ('$NAME' then '$1'); only the profile name is positional.
@@ -58,13 +65,156 @@ $(usage)"
 # ------------------------------------------------- step 1: choose_tool_and_name
 
 head_ "Name"
-# A '/' makes a nested profile: work/oma lives at <root>/work/oma and is named
-# "work/oma" everywhere. Discovery finds it by the same rule that finds any
+# A '/' makes a nested profile: work/acme lives at <root>/work/acme and is named
+# "work/acme" everywhere. Discovery finds it by the same rule that finds any
 # other -- a directory holding .claude.json -- so "work" needs no registration.
 case "$NAME" in
   /*|*/) die "name must not start or end with '/': $NAME" ;;
   *..*)  die "name must not contain '..': $NAME" ;;
 esac
+
+# =========================================================================
+# Codex. Same four steps, different files. Kept as one block rather than
+# interleaved with the Claude steps so that each tool's rules can be read
+# top to bottom -- the two share the shape (copy the rewritten file, link the
+# shared originals, never touch the credential, stop before sign-in) but
+# not one file name.
+# =========================================================================
+if [ "$TOOL" = codex ]; then
+  DIR="$CODEX_PROFILES/$NAME"
+  note "tool = codex"
+  note "name = $NAME"
+  note "dir  = $DIR"
+
+  if [ -e "$DIR" ]; then
+    if agswt_is_codex_profile "$DIR"; then
+      die "a Codex profile already exists at $DIR — pick another name, or sign in to it with:
+    CODEX_HOME=$DIR codex login"
+    fi
+    die "$DIR already exists (and is not a Codex profile). Refusing to write into it."
+  fi
+
+  head_ "Directory"
+  case "$NAME" in
+    */*) parent="$CODEX_PROFILES/$(dirname "$NAME")"
+         if [ ! -d "$parent" ]; then
+           note "creating parent group $parent"
+         elif agswt_is_codex_profile "$parent"; then
+           note "parent $parent is itself a profile — allowed, it will keep working as one"
+         fi ;;
+  esac
+  mkdir -p "$DIR" || die "could not create $DIR"
+  ok "created $DIR"
+
+  head_ "Shared configuration"
+  if [ -n "$FROM" ]; then
+    case "$FROM" in /*) SRC="$FROM" ;; *) SRC="$CODEX_PROFILES/$FROM" ;; esac
+    [ -d "$SRC" ] || die "--from profile not found: $SRC"
+  else
+    SRC="$CODEX_DEFAULT"
+  fi
+  [ -n "$SHARED" ] || SHARED="$CODEX_DEFAULT"
+  note "settings source  = $SRC$([ -n "$FROM" ] || printf ' (default; override with --from)')"
+  note "shared originals = $SHARED$([ -n "$SHARED_SET" ] || printf ' (default; override with --shared)')"
+
+  # config.toml is COPIED, never symlinked: Codex edits it itself (project
+  # trust entries, model-migration notices, hook state), and a symlink would
+  # write those edits into the original. A source without one is not an
+  # error the way a missing settings.json is -- a pristine Codex install has
+  # none -- but the profile still needs its marker, so an empty file is
+  # written and announced.
+  if [ -f "$SRC/config.toml" ]; then
+    cp -p "$SRC/config.toml" "$DIR/config.toml" && ok "copied config.toml (never a symlink: Codex rewrites it)"
+  else
+    printf '# agswt: created empty; %s had no config.toml to seed from\n' "$SRC" > "$DIR/config.toml" \
+      && note "$SRC/config.toml not present — wrote an empty one so the profile is discoverable"
+  fi
+  for f in hooks.json; do
+    if [ -f "$SRC/$f" ]; then
+      cp -p "$SRC/$f" "$DIR/$f" && ok "copied $f"
+    else
+      note "$SRC/$f not present, skipped"
+    fi
+  done
+  # rules/ holds exec-policy files; per-profile copy, same reasoning as config.
+  if [ -d "$SRC/rules" ]; then
+    cp -Rp "$SRC/rules" "$DIR/rules" && ok "copied rules/ ($(find "$DIR/rules" -type f | wc -l | tr -d ' ') file(s))"
+  else
+    note "$SRC/rules not present, skipped"
+  fi
+
+  # AGENTS.md is the Codex counterpart of CLAUDE.md: read, not rewritten, so
+  # one symlinked source of truth.
+  if [ -e "$SHARED/AGENTS.md" ]; then
+    target="$(cd "$(dirname "$SHARED/AGENTS.md")" && pwd -P)/AGENTS.md"
+    [ -L "$SHARED/AGENTS.md" ] && target="$(readlink "$SHARED/AGENTS.md")"
+    ln -s "$target" "$DIR/AGENTS.md" && ok "symlinked AGENTS.md -> $target"
+  else
+    note "$SHARED/AGENTS.md not present, skipped"
+  fi
+
+  # prompts/ and skills/ follow the Claude rule for commands/ and skills/: a
+  # REAL directory of absolute per-entry links, never a directory symlink
+  # (traps #15). Dot-entries are skipped on purpose: skills/.system is
+  # Codex's own, regenerated per home.
+  for p in prompts skills; do
+    if [ -d "$SHARED/$p" ]; then
+      srcdir="$(cd "$SHARED/$p" && pwd -P)"
+      mkdir -p "$DIR/$p"
+      n=0
+      for item in "$srcdir"/*; do
+        [ -e "$item" ] || [ -L "$item" ] || continue
+        ln -s "$item" "$DIR/$p/$(basename "$item")" && n=$((n+1))
+      done
+      ok "created $p/ with $n absolute links into $srcdir"
+    else
+      note "$SHARED/$p not present, skipped"
+    fi
+  done
+
+  # THE CREDENTIAL IS NEVER COPIED. auth.json holds the account's tokens in
+  # plaintext; a copy is a second signed-in instance of the same account,
+  # which is the opposite of what a new profile is for.
+  note "auth.json not copied — a profile gets its account by signing in, never by copying"
+
+  for f in config.toml hooks.json; do
+    [ -e "$DIR/$f" ] || continue
+    [ -L "$DIR/$f" ] && warn "$f is a symlink — it must be a real file; Codex edits it in place"
+  done
+  if [ -e "$DIR/AGENTS.md" ] && [ ! -L "$DIR/AGENTS.md" ]; then
+    warn "AGENTS.md is a real copy — it should be a symlink so there is one source of truth"
+  fi
+  for p in prompts skills; do
+    [ -e "$DIR/$p" ] || continue
+    if [ -L "$DIR/$p" ]; then
+      warn "$p is a directory symlink — installers writing through it produce dead links; make it a real directory of per-entry links"
+    else
+      # Named, not counted: a count says something is wrong, a name says
+      # which entry -- and the target shows that the SOURCE entry was already
+      # dead (an installer's stale link), which is where the fix goes.
+      for l in "$DIR/$p"/*; do
+        [ -L "$l" ] && [ ! -e "$l" ] && warn "$p/$(basename "$l") is a broken link -> $(readlink "$l") (the source entry is itself dead; fix or remove it there)"
+      done
+    fi
+  done
+
+  head_ "Not ready yet"
+  # For Codex the CLI login IS the route. `codex login` opens the browser
+  # OAuth flow of the vendor's own binary and writes auth.json into this
+  # directory; whether the first interactive launch would also offer a
+  # sign-in has not been measured, so nothing here relies on it.
+  printf '  The profile is PREPARED, not signed in.\n\n'
+  printf '  Sign it in (browser OAuth, needs a human):\n\n'
+  printf '    CODEX_HOME=%s codex login\n' "$DIR"
+  printf '    CODEX_HOME=%s codex login --device-auth   # no browser on this machine\n\n' "$DIR"
+  printf '  Then give it something to do:\n\n'
+  printf '    bind a directory to it   wire-direnv.sh %s --dir <directory>\n\n' "$NAME"
+  printf '  Codex history is not migrated between profiles: Codex is moving thread\n'
+  printf '  history into sqlite (see codex migrate-rollouts), so copying files is not\n'
+  printf '  a migration. See references/codex-notes.md.\n'
+  exit 0
+fi
+
 DIR="$CLAUDE_PROFILES/$NAME"
 note "name = $NAME"
 note "dir  = $DIR"
@@ -195,9 +345,12 @@ for p in commands skills; do
   if [ -L "$DIR/$p" ]; then
     warn "$p is a directory symlink — installers writing through it produce dead links; make it a real directory of per-entry links"
   else
-    broken=0
-    for l in "$DIR/$p"/*; do [ -L "$l" ] && [ ! -e "$l" ] && broken=$((broken+1)); done
-    [ "$broken" -gt 0 ] && warn "$p has $broken broken links"
+    # Named, not counted: a count says something is wrong, a name says
+    # which entry -- and the target shows that the SOURCE entry was already
+    # dead (an installer's stale link), which is where the fix goes.
+    for l in "$DIR/$p"/*; do
+      [ -L "$l" ] && [ ! -e "$l" ] && warn "$p/$(basename "$l") is a broken link -> $(readlink "$l") (the source entry is itself dead; fix or remove it there)"
+    done
   fi
 done
 

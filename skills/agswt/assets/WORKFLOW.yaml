@@ -1,10 +1,12 @@
 name: agswt
-description: Per-account profiles for Claude Code — create, migrate, bind to directories, and report usage.
-version: "0.1"
+description: Per-account profiles for Claude Code and Codex — create, migrate (Claude), bind to directories, and report usage.
+version: "0.2"
 
 config:
   claude_profiles: "${AGSWT_PROFILES_ROOT:-$HOME/.claude_profiles}"
   claude_default: "$HOME/.claude"
+  codex_profiles: "${AGSWT_CODEX_PROFILES_ROOT:-$HOME/.codex_profiles}"
+  codex_default: "$HOME/.codex"
 
 operations:
 
@@ -17,8 +19,12 @@ operations:
     steps:
       - step: 1
         name: choose_tool_and_name
-        description: Decide which tool and what the profile is called.
+        description: >
+          Decide which tool and what the profile is called. The name is shared:
+          the Claude half lives at <claude_profiles>/<name>, the Codex half at
+          <codex_profiles>/<name>, and wire-direnv binds whichever exist.
         actions:
+          - "Default tool is claude; pass --tool codex for the Codex half."
           - "Reject a name that already exists as a directory; profiles are never silently reused."
 
       - step: 2
@@ -34,10 +40,13 @@ operations:
           truth. See references/manifest.md for why settings.json cannot be a
           symlink.
         actions:
-          - "Copy settings.json from an existing profile or the default dir (COPY, never symlink)"
-          - "Copy remote-settings.json if the source has one"
-          - "Symlink CLAUDE.md (as a file) to the shared original"
-          - "Create commands/ and skills/ as REAL directories; link each entry absolutely (a directory symlink breaks installers — traps #15)"
+          - "Claude: copy settings.json from an existing profile or the default dir (COPY, never symlink)"
+          - "Claude: copy remote-settings.json if the source has one"
+          - "Claude: symlink CLAUDE.md (as a file) to the shared original"
+          - "Claude: create commands/ and skills/ as REAL directories; link each entry absolutely (a directory symlink breaks installers — traps #15)"
+          - "Codex: copy config.toml (an empty one if the source has none), hooks.json, rules/ — Codex edits config.toml in place"
+          - "Codex: symlink AGENTS.md as a file; create prompts/ and skills/ as REAL directories of absolute per-entry links, skipping dot-entries"
+          - "Codex: NEVER copy auth.json — plaintext tokens; the account arrives by signing in"
 
       - step: 4
         name: stop_and_hand_off
@@ -51,6 +60,7 @@ operations:
           - "Point at the two ways to give the profile work: wire-direnv <name> --dir <directory>, or migrate-workspace --to <name>."
           - "Say that running claude in that directory will ask for an account, and that this prompt IS the sign-in for the profile."
           - "ONLY for a profile that will never be launched in (a poll-only account), print: CLAUDE_CONFIG_DIR=<dir> claude auth login --claudeai"
+          - "Codex: the CLI login IS the route — print CODEX_HOME=<dir> codex login (and --device-auth for a machine without a browser). Whether the first interactive launch also signs in is not measured."
 
   verify:
     description: >
@@ -65,6 +75,7 @@ operations:
         description: Ask the tool, do not infer from files on disk.
         actions:
           - "Claude: CLAUDE_CONFIG_DIR=<dir> claude auth status"
+          - "Codex: scripts/codex-ask.py <dir> — email and plan from the app server. `codex login status` only says logged-in-or-not, never as whom."
       - step: 2
         name: report
         description: Report the account identity, or where the sign-in still has to happen.
@@ -96,7 +107,8 @@ operations:
         name: write_envrc
         description: Write the binding, with a comment saying why.
         actions:
-          - "Write CLAUDE_CONFIG_DIR for the chosen profile."
+          - "Write CLAUDE_CONFIG_DIR for the Claude half and CODEX_HOME for the Codex half — every half that exists under the name, or one with --tool."
+          - "Say which half is missing when only one exists, so a one-tool binding is never mistaken for both."
           - "Optionally pin a GitHub identity: export GH_TOKEN=\"$(gh auth token --user <acct>)\""
           - "Never write a literal token into the file; derive it at load time."
 
@@ -110,7 +122,9 @@ operations:
 
   migrate-workspace:
     description: >
-      Move one project's data from one profile to another. Read
+      Move one project's data from one profile to another. Claude only — Codex
+      keeps thread history in sqlite and nothing here moves it
+      (references/codex-notes.md). Read
       references/manifest.md first — this is the operation that loses things.
     steps:
       - step: 1
@@ -172,7 +186,10 @@ operations:
           - "Say plainly that nothing has been deleted."
 
   rename-workspace:
-    description: Make a stored slug follow a project directory that moved or was renamed.
+    description: >
+      Make a stored slug follow a project directory that moved or was renamed.
+      Claude only — Codex keeps thread history in sqlite and nothing here moves it
+      (references/codex-notes.md).
     steps:
       - step: 1
         name: locate_old_slug
@@ -217,7 +234,8 @@ operations:
         name: keychain
         description: A locked keychain makes every account look signed out.
         actions:
-          - "Read an unrelated item; exit 36 means the keychain is locked, not that the account is gone."
+          - "Do NOT probe by reading another item's secret: a System-keychain item prompts for an admin password on a healthy machine and hangs the run (measured 2026-09-05). There is no prompt-free lock-state query."
+          - "Say that lock state is not probed, and that every account signed out AT ONCE is the signature."
           - "If locked, print: security unlock-keychain ~/Library/Keychains/login.keychain-db"
 
       - step: 4
@@ -226,6 +244,7 @@ operations:
         actions:
           - "For each profile: signed-in identity, access token expiry, refresh token expiry."
           - "Mark a profile stale rather than broken when only the access token has expired."
+          - "Codex: signed in or not (auth.json present), auth.json mode is 0600, config.toml is not a symlink, prompts/ and skills/ are not directory symlinks. CODEX_HOME set to its own default is NOT a fault (measured harmless)."
 
       - step: 5
         name: workspace_integrity
@@ -236,16 +255,17 @@ operations:
 
   report:
     description: >
-      Usage across every profile, read from the claude binary itself. Never read
-      the OAuth credential: Anthropic scopes it to Claude Code and native
-      Anthropic apps, so a script holding it is a third-party tool using a
-      subscription credential.
+      Usage across every profile of both tools, read from each vendor's own
+      binary. Never read a credential: Anthropic scopes its OAuth token to
+      Claude Code and native Anthropic apps, and Codex's auth.json is plaintext
+      that nothing here opens.
     steps:
       - step: 1
         name: discover
         description: Enumerate profiles. There is no separate measurement tier.
         actions:
-          - "Every directory under <claude_profiles>, plus the default ~/.claude."
+          - "Claude: every directory under <claude_profiles>, plus the default ~/.claude."
+          - "Codex: every directory under <codex_profiles> holding auth.json or config.toml, plus the default ~/.codex."
           - "A profile in active use reports correctly — verified 2026-08-22 against a live session."
 
       - step: 2
@@ -257,6 +277,7 @@ operations:
           - "CLAUDE_CONFIG_DIR=<dir> claude -p \"/usage\" --output-format json"
           - "Parse the `result` field: the two percentages and two reset times are on fixed-format lines."
           - "Do NOT read the keychain, derive a hashed service name, or call the usage endpoint."
+          - "Codex: scripts/codex-ask.py <dir>... — starts `codex app-server` over stdio per home, asks account/read and account/rateLimits/read, stops it. Do NOT scrape the rate_limits snapshots in session rollouts: a reset makes every earlier snapshot wrong (measured 2026-09-05)."
 
       - step: 3
         name: handle_stale
@@ -267,7 +288,8 @@ operations:
 
       - step: 4
         name: render
-        description: One table.
+        description: One table, produced by the script, shown unchanged.
         actions:
-          - "Columns: account, plan, short window %, long window %, reset times, status."
+          - "Run report.sh --md and paste the Markdown table to the person AS IS; remarks go after it, never as a rewrite of it."
+          - "Columns: account, tool, plan, short window %, long window %, reset times, status. One row per (tool, account); the directories folded into a row are listed under the table."
           - "Format resets with a day unit: a seven-day window routinely reads three digits of hours."

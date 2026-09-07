@@ -4,7 +4,7 @@
   "groupings": [
     {
       "title": "Multi-account",
-      "description": "Manage the multiple Claude accounts one person holds: assign each account to a profile, let a directory decide which profile it runs on, migrate existing work between profiles, and read what is left on every plan in one report.",
+      "description": "Manage the multiple Claude Code and Codex accounts one person holds: assign each account to a profile, let a directory decide which profiles it runs on, migrate existing Claude work between profiles, and read what is left on every plan of both tools in one report.",
       "skills": [
         "agswt"
       ]

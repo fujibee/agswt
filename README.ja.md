@@ -15,8 +15,9 @@
 [Anthropic の規約に対してどこに立っているか](#anthropic-の規約に対してどこに立っているか)
 を参照。
 
-対応は **Claude Code**。Codex は調査済み・未実装 —
-[`codex-notes.md`](skills/agswt/references/codex-notes.md) 参照。
+対応は **Claude Code** と **Codex**。profile・ディレクトリ束縛・消費量レポートは
+両方をカバーする。既存履歴の移動は Claude のみ（Codex はスレッド履歴を
+データベースに持つ — [`codex-notes.md`](skills/agswt/references/codex-notes.md) 参照）。
 
 ## インストール
 
@@ -37,13 +38,16 @@ agswt は CLI ではなく skill — エージェントに普通の言葉で頼�
 3. **そのディレクトリで `claude` を起動する。**ここで1回だけサインインを求められる —
    このブラウザ OAuth が本物のサインインで、あなたにしかできない。
    （先に CLI でサインインしてもこの画面は消えない — 実測済み — ので、
-   この流れでは最初からやらない。）
+   この流れでは最初からやらない。）Codex の profile は代わりに CLI でサインインする:
+   `CODEX_HOME=<dir> codex login`。
 4. **完了。**以後、その下はすべてそのアカウントで動く。残量はいつでも `report`。
    「見るためだけ」のアカウントだけが例外で、起動が来ないので CLI サインインで
    入れておく。
 
 profile 名は入れ子にできる: `work/acme`、`clients/x` — 名前の `/` がそのまま
-グループになり、report にも構造が出る。
+グループになり、report にも構造が出る。名前は2つのツールで共有される:
+**「`work/acme` の Codex profile も作って」**で同じ名前に Codex 側の半分ができ、
+ディレクトリを束縛すると `CLAUDE_CONFIG_DIR` の隣に `CODEX_HOME` も書かれる。
 
 ## なぜ
 
@@ -56,30 +60,32 @@ profile 名は入れ子にできる: `work/acme`、`clients/x` — 名前の `/`
 すれば、結びついたディレクトリは全部付いてくる。
 残量を読むだけで使わない「見るためだけのプロファイル」も作れる。
 
-その下の仕組み: Claude Code は config ディレクトリ1つにつき、ログイン済みアカウントをちょうど1つ持つ。
-選択は `CLAUDE_CONFIG_DIR`（既定 `~/.claude`）。分離の仕組みはこれが全部で、
+その下の仕組み: どちらのツールも config ディレクトリ1つにつき、ログイン済みアカウントをちょうど1つ持つ。
+選択は Claude Code が `CLAUDE_CONFIG_DIR`（既定 `~/.claude`）、Codex が `CODEX_HOME`
+（既定 `~/.codex`）。分離の仕組みはこれが全部で、
 コンテナも VM も、切り替えのためのサインアウトも要らない。実際に面倒なのは
 その周辺 — どのファイル群が「アカウント」を構成するのか、コピーしたプロジェクトが
 なぜ履歴を半分失うのか、完全に健全なアカウントがなぜ「サインアウト済み」と
 報告されるのか。
 
-profile の置き場所は既定で **`~/.claude_profiles`**。別の場所に置くなら
-環境変数 `AGSWT_PROFILES_ROOT` — 全スクリプトが同じ変数を読むので、
-場所の変更は1箇所で効くか、まったく効かないかのどちらかしかない。
+profile の置き場所は既定で **`~/.claude_profiles`**（Claude）と
+**`~/.codex_profiles`**（Codex）。別の場所に置くなら環境変数
+`AGSWT_PROFILES_ROOT` と `AGSWT_CODEX_PROFILES_ROOT` — 全スクリプトが同じ変数を
+読むので、場所の変更は1箇所で効くか、まったく効かないかのどちらかしかない。
 
 `agswt` はその知識を、文書化して実行可能にしたもの。
 
 ## できること
 
-| 操作 | 内容 |
-|---|---|
-| `create-profile` | 新しい profile を作り、サインインコマンドを表示して**止まる** |
-| `verify` | profile が本当にサインイン済みかを確認する |
-| `migrate-workspace` | 1プロジェクトのデータを profile 間で移動 |
-| `wire-direnv` | `.envrc` でディレクトリと profile を結びつける |
-| `rename-workspace` | ディレクトリ移動に保存済み slug を追従させる |
-| `doctor` | 既知の故障モードを点検 |
-| `report` | 全 profile の消費量レポート |
+| 操作 | 内容 | 対象 |
+|---|---|---|
+| `create-profile` | 新しい profile を作り、サインインコマンドを表示して**止まる** | Claude, Codex |
+| `verify` | profile が本当にサインイン済みか、誰としてかを確認する | Claude, Codex |
+| `migrate-workspace` | 1プロジェクトのデータを profile 間で移動 | Claude |
+| `wire-direnv` | `.envrc` でディレクトリと profile を結びつける | 両方同時 |
+| `rename-workspace` | ディレクトリ移動に保存済み slug を追従させる | Claude |
+| `doctor` | 既知の故障モードを点検 | Claude, Codex |
+| `report` | 全 profile の消費量レポート | Claude, Codex |
 
 ## 知っていることの一例
 
@@ -101,6 +107,11 @@ profile の置き場所は既定で **`~/.claude_profiles`**。別の場所に�
   ので、glob は必ず取りこぼす。
 - `settings.json` は絶対に symlink にしない: temp-file-and-rename で書き換えられる
   ため、リンクが実ファイルに置き換わる。
+- Codex の消費量も同じ流儀で読む — 無改変の `codex` バイナリ（その app server に
+  stdio で）に聞く。`auth.json` は開かず、セッションログの rate limit スナップショットも
+  漁らない: リセットを1回使うと、それ以前のスナップショットは全部嘘になる。
+- `codex login status` は「ログイン済みか否か」しか言わず、誰としてかは言わない。
+  Codex profile の背後のアカウントも app server から取る。
 
 症状と対処を含む完全な一覧は
 [`skills/agswt/references/traps.md`](skills/agswt/references/traps.md)。
@@ -166,6 +177,15 @@ agswt が意図的に**そうでない**もの、2つ:
 規約は変わるし、Anthropic は予告なく制限を執行する権利を留保している。この節は
 上記日付時点の文書の記述であり、依拠するなら必ずリンク先を読むこと。
 
+**OpenAI の規約に対しても同じ。**Codex 側も同じ原則で作ってある: 無改変の `codex`
+バイナリが自分の credential を読み、agswt はそれを通してサインインした本人の
+アカウントを読む。Codex のリードは[公に](https://x.com/thsottiaux/status/2090675027670978569)
+（2026-08-21）、許されないのは "converting a subscription into api traffic — often
+shared with several users"（サブスクを、しばしば複数人で共有される API トラフィックに
+変換すること）だと述べている。agswt は何も再提供しない。OpenAI の消費者規約は
+rate limit の回避も禁じているが、agswt はどのプランが何を与えるかを変えない。
+詳細は [`codex-notes.md`](skills/agswt/references/codex-notes.md)。
+
 ## 代替ツール
 
 `CLAUDE_CONFIG_DIR` によるプロファイル切替は小さなジャンルで、少なくとも10本ある。
@@ -180,6 +200,8 @@ agswt が意図的に**そうでない**もの、2つ:
 - **使用量レポートが credential に一切触れない。**残量を出す既存ツールは OAuth
   credential を自前で読むか差し替える設計。agswt は無改変の `claude` バイナリに
   聞くだけ。上の規約の節が、この差が効く理由。
+- **Codex も同じレポートに載る。**同じ profile 名、同じ `.envrc`、2つのサブスクを
+  1つの表で。
 - **履歴を運ぶ。**`migrate-workspace` は既存プロジェクトの transcript・memory・
   MCP 2スコープ・sidecar を、カテゴリ別の件数検証つきで profile 間移動する。
   切替ツールは「次からの作業」の行き先を決めるだけで、「今まで」を運ぶものは
@@ -190,7 +212,8 @@ agswt が意図的に**そうでない**もの、2つ:
 ## 要件
 
 - macOS または Linux
-- Claude Code
+- Claude Code と/または Codex（消費量レポートは codex-cli 0.153 以降 — app server の
+  `account/rateLimits/read` が要る）
 - 任意: ディレクトリごとの自動切り替えに `direnv`、アカウントごとに GitHub
   identity を固定するなら `gh`
 

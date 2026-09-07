@@ -23,12 +23,15 @@ read with `errSecInteractionNotAllowed` (OSStatus −25308, surfacing as exit co
 36 from `security`) and prints nothing at all — empty stdout, empty stderr. A
 healthy account is indistinguishable from a signed-out one.
 
-**Confirm.** Read an unrelated item. If it also exits 36, the keychain is at
-fault and not your code:
-
-```bash
-security find-generic-password -s "AirPort" -w; echo "rc=$?"
-```
+**Confirm.** Do not probe by reading some other item's secret. The earlier
+advice here (`security find-generic-password -s "AirPort" -w`) reads a
+*System*-keychain item, so on an unlocked machine it raises an
+administrator-password dialog and hangs whatever ran it until somebody
+answers (measured 2026-09-05) — silent in the broken state, a prompt in the
+healthy one. There is no prompt-free query for lock state
+(`security show-keychain-info` reports timeout settings, not whether it is
+locked). The confirmation *is* the fix below: unlocking an already-unlocked
+keychain is harmless.
 
 **Fix.** From a terminal that can prompt for a password:
 
@@ -221,7 +224,7 @@ is still in the Keychain — under a name nothing will ever ask for again.
 transcripts, memory, settings, and MCP config all travel with the directory;
 only the credential stays behind. Treat a reorganize as `mv` plus one OAuth
 sign-in, and prefer choosing the structure at creation (names may be nested:
-`work/oma`, `clients/acme`) so the sign-in is not needed at all.
+`work/acme`, `clients/acme`) so the sign-in is not needed at all.
 
 ---
 
@@ -300,3 +303,88 @@ for s in ~/.claude/skills/*; do ln -s "$s" <profile>/skills/"$(basename "$s")"; 
 The trade-off is honest: a shared entry added *outside* an installer no longer
 appears in every profile automatically — the installer (which installs
 globally per real directory) is the distribution mechanism now.
+
+---
+
+## Codex: session rollouts keep answering from before a reset
+
+**Symptom.** A usage reader built on the `rate_limits` snapshots in
+`<CODEX_HOME>/sessions/…/rollout-*.jsonl` reports the 7-day window at 100%
+while Codex itself shows 3%.
+
+**Cause.** A rate-limit reset credit ("Full reset (Weekly + 5 hr)") was
+consumed. Every snapshot written before it is now wrong, and the same session
+file carries both the old and the new reset epoch. "Newest line in the newest
+file" is right only if the last session to speak did so after the reset.
+
+**Fix.** Ask the app server — `scripts/codex-ask.py` — which returns the
+server's current answer for the account this directory holds. Measured
+2026-09-05, codex-cli 0.153.4.
+
+---
+
+## Codex: `codex login status` does not say who
+
+**Symptom.** Every profile reports `Logged in using ChatGPT` and nothing
+distinguishes them.
+
+**Cause.** The status subcommand reports the mode, not the account.
+
+**Fix.** `account/read` on the app server returns the e-mail and plan;
+`codex-ask.py` prints both. Never read them out of `auth.json`.
+
+---
+
+## Codex: a usage read through the app server writes into the home
+
+**Symptom.** A "read-only" report leaves modified sqlite WALs and a fresh
+`models_cache.json` in every Codex profile it polled, and an empty profile
+directory gains sqlite files, `installation_id` and `skills/`.
+
+**Cause.** The app server is the Codex runtime; it opens its stores on start.
+
+**Fix.** None needed — it does not create sessions or rollouts (measured
+across three reads), and the footprint is the same class as `claude -p`
+leaving a `projects/<slug>` directory. Know that it happens, and do not
+mistake the WAL timestamps for use.
+
+---
+
+## Codex: `codex exec` hangs forever
+
+**Symptom.** No output, never returns, dies on your timeout.
+
+**Cause.** Waiting on stdin — `Reading additional input from stdin...`, on
+stderr where a piped call never shows it.
+
+**Fix.**
+
+```bash
+codex exec --skip-git-repo-check "…" </dev/null
+```
+
+---
+
+## Codex: nothing in this skill that writes can run inside the Codex sandbox
+
+**Symptom.** Driven from a Codex session, `report` shows every Codex row as
+`app server exited with status 1` and every Claude row as `no quota line`,
+and `wire-direnv` ends with `direnv allow failed`. The same commands work
+from a terminal.
+
+**Cause.** Codex's sandbox (workspace-write) refuses writes outside the
+workspace and `/tmp`. The app server needs its sqlite stores under
+`CODEX_HOME`; the claude binary needs its own state; direnv records the
+allow under `~/.local/share/direnv`. Measured 2026-09-06, codex-cli 0.153.4:
+
+```
+$ codex sandbox -- codex app-server
+Error: failed to initialize sqlite state runtime under /Users/me/.codex: …
+$ direnv allow .        # from inside the sandbox
+… operation not permitted
+```
+
+**Fix.** Run `report`, `wire-direnv` and `create-profile` with the sandbox
+lifted for that command (Codex asks for approval), or from a normal shell.
+Every script now appends the failing binary's last stderr line to its
+status, so the sandbox names itself instead of hiding behind an exit code.

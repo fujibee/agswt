@@ -11,18 +11,24 @@
 # helps whoever runs doctor; writing it correctly helps everybody.
 #
 # Usage:
-#   wire-direnv.sh <profile> [--dir <directory>] [--profiles-root <dir>]
+#   wire-direnv.sh <profile> [--dir <directory>] [--tool claude|codex] [--migrate] [--profiles-root <dir>]
+#
+# One profile NAME may have a Claude half and a Codex half (same name under
+# each tool's root). Without --tool the directory is bound to every half that
+# exists: CLAUDE_CONFIG_DIR for the Claude one, CODEX_HOME for the Codex one.
 set -uo pipefail
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/agswt-common.sh"
 CLAUDE_PROFILES="$(agswt_profiles_root)"
+CODEX_PROFILES="$(agswt_codex_profiles_root)"
 CLAUDE_DEFAULT="$HOME/.claude"
 AGSWT_VERSION="$(cat "$_here/../VERSION" 2>/dev/null | tr -d '[:space:]')"
 
 usage() {
-  printf 'usage: wire-direnv.sh <profile> [--dir <directory>] [--migrate] [--profiles-root <dir>]\n'
-  printf '       --migrate moves this directory'"'"'s existing history into the profile\n'
+  printf 'usage: wire-direnv.sh <profile> [--dir <directory>] [--tool claude|codex] [--migrate] [--profiles-root <dir>]\n'
+  printf '       --tool    bind only that tool'"'"'s half (default: every half that exists)\n'
+  printf '       --migrate moves this directory'"'"'s existing Claude history into the profile\n'
   printf '       the directory defaults to the current one\n'
 }
 problems=0
@@ -32,13 +38,15 @@ warn()  { printf '  [warn] %s\n' "$*"; problems=$((problems + 1)); }
 die()   { printf 'wire-direnv: %s\n' "$*" >&2; exit 2; }
 head_() { printf '\n== %s\n' "$*"; }
 
-PROFILE=""; DIR="$PWD"; MIGRATE=0
+PROFILE=""; DIR="$PWD"; MIGRATE=0; TOOL=all
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) DIR="${2:?--dir needs a directory}"; shift 2 ;;
+    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) die "--tool must be claude or codex, not $TOOL" ;; esac ;;
     --migrate) MIGRATE=1; shift ;;
-    --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; CODEX_PROFILES="$CLAUDE_PROFILES"; shift 2 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     -*) die "unknown option: $1
 $(usage)" ;;
     # THE PROFILE IS THE FIRST POSITIONAL, and the directory is a flag. The
@@ -56,13 +64,44 @@ $(usage)"
 [ -d "$DIR" ] || die "no such directory: $DIR"
 DIR="$(cd "$DIR" && pwd -P)"
 
-case "$PROFILE" in /*) PROFILE_DIR="$PROFILE" ;; *) PROFILE_DIR="$CLAUDE_PROFILES/$PROFILE" ;; esac
-[ -d "$PROFILE_DIR" ] || die "profile not found: $PROFILE_DIR
-  Create it first:  create-profile.sh $PROFILE"
+# Resolve BOTH halves, then decide which to bind. An absolute path is one
+# directory and names its own tool by content.
+case "$PROFILE" in
+  /*) if agswt_is_codex_profile "$PROFILE"; then CLAUDE_HALF=""; CODEX_HALF="$PROFILE"
+      else CLAUDE_HALF="$PROFILE"; CODEX_HALF=""; fi ;;
+  *)  CLAUDE_HALF="$CLAUDE_PROFILES/$PROFILE"; CODEX_HALF="$CODEX_PROFILES/$PROFILE" ;;
+esac
+[ -n "$CLAUDE_HALF" ] && [ -d "$CLAUDE_HALF" ] || CLAUDE_HALF=""
+[ -n "$CODEX_HALF" ] && agswt_is_codex_profile "$CODEX_HALF" || CODEX_HALF=""
+case "$TOOL" in
+  claude) CODEX_HALF="" ;;
+  codex)  CLAUDE_HALF="" ;;
+esac
+if [ -z "$CLAUDE_HALF" ] && [ -z "$CODEX_HALF" ]; then
+  die "profile not found: $PROFILE
+  looked for a Claude half at $CLAUDE_PROFILES/$PROFILE
+  and a Codex half at       $CODEX_PROFILES/$PROFILE$([ "$TOOL" = all ] || printf '\n  (restricted to --tool %s)' "$TOOL")
+  Create one first:  create-profile.sh $PROFILE [--tool codex]"
+fi
+# PROFILE_DIR stays the Claude half: the history check and the migration
+# below are Claude-only, and they read it.
+PROFILE_DIR="$CLAUDE_HALF"
 
 head_ "Binding"
 note "directory = $DIR"
-note "profile   = $PROFILE_DIR"
+[ -n "$CLAUDE_HALF" ] && note "claude    = $CLAUDE_HALF  (CLAUDE_CONFIG_DIR)"
+[ -n "$CODEX_HALF" ]  && note "codex     = $CODEX_HALF  (CODEX_HOME)"
+if [ "$TOOL" = all ]; then
+  # Say which half is MISSING, so a name that only exists on one side is not
+  # silently bound as a one-tool profile the caller thought was both.
+  [ -n "$CLAUDE_HALF" ] || note "no Claude half at $CLAUDE_PROFILES/$PROFILE — only CODEX_HOME will be bound"
+  [ -n "$CODEX_HALF" ]  || note "no Codex half at $CODEX_PROFILES/$PROFILE — only CLAUDE_CONFIG_DIR will be bound"
+fi
+# The lines the .envrc will carry, in one place.
+BIND_LINES=""
+[ -n "$CLAUDE_HALF" ] && BIND_LINES="export CLAUDE_CONFIG_DIR=$CLAUDE_HALF"
+[ -n "$CODEX_HALF" ]  && BIND_LINES="${BIND_LINES}${BIND_LINES:+
+}export CODEX_HOME=$CODEX_HALF"
 
 # ------------------------------------------------------- step 2: refuse first
 
@@ -70,8 +109,8 @@ note "profile   = $PROFILE_DIR"
 # variables it exports are invisible from here.
 if [ -e "$DIR/.envrc" ]; then
   die "$DIR/.envrc already exists — not overwriting it.
-  Add this line yourself, keeping whatever is already there:
-    export CLAUDE_CONFIG_DIR=$PROFILE_DIR"
+  Add these yourself, keeping whatever is already there:
+$(printf '%s\n' "$BIND_LINES" | sed 's/^/    /')"
 fi
 
 # --------------------------------------------- step 1: does a parent .envrc exist
@@ -89,12 +128,12 @@ done
 
 if [ -n "$parent_envrc" ]; then
   note "found $parent_envrc — the new file must chain to it"
-  printf 'source_up\nexport CLAUDE_CONFIG_DIR=%s\n' "$PROFILE_DIR" > "$DIR/.envrc" \
+  printf 'source_up\n%s\n' "$BIND_LINES" > "$DIR/.envrc" \
     || die "could not write $DIR/.envrc"
   ok "wrote .envrc with source_up"
 else
   note "no parent .envrc above this directory"
-  printf 'export CLAUDE_CONFIG_DIR=%s\n' "$PROFILE_DIR" > "$DIR/.envrc" \
+  printf '%s\n' "$BIND_LINES" > "$DIR/.envrc" \
     || die "could not write $DIR/.envrc"
   ok "wrote .envrc"
 fi
@@ -123,8 +162,8 @@ if ! command -v direnv >/dev/null 2>&1; then
   printf '\n    brew install direnv        # or: sudo apt install direnv\n'
   printf '    eval "$(direnv hook zsh)"  # add to ~/.zshrc (bash: ...hook bash)\n'
   printf '    https://direnv.net for other shells\n\n'
-  note "Or skip direnv and export the variable yourself in every shell:"
-  printf '\n    export CLAUDE_CONFIG_DIR=%s\n\n' "$PROFILE_DIR"
+  note "Or skip direnv and export the variable(s) yourself in every shell:"
+  printf '\n%s\n\n' "$(printf '%s\n' "$BIND_LINES" | sed 's/^/    /')"
   exit 0
 fi
 
@@ -136,8 +175,20 @@ if [ -z "$hook_seen" ]; then
 fi
 
 head_ "Allow"
-(cd "$DIR" && direnv allow .) >/dev/null 2>&1 \
-  && ok "direnv allow" || warn "direnv allow failed — run it yourself in $DIR"
+# The failure's stderr is SHOWN. "direnv allow failed" alone cannot be told
+# apart from a direnv misconfiguration when the real cause is a sandbox that
+# refuses writes under ~/.local/share/direnv (measured 2026-09-06 from inside
+# Codex's sandbox: "operation not permitted"), and the reader had to rerun
+# the command by hand to learn that.
+allow_err="$(cd "$DIR" && direnv allow . 2>&1 >/dev/null)"
+if [ $? -eq 0 ]; then
+  ok "direnv allow"
+else
+  warn "direnv allow failed — run it yourself in $DIR${allow_err:+ (direnv said: $(printf '%s' "$allow_err" | tail -1))}"
+  case "$allow_err" in *"not permitted"*|*"ermission denied"*)
+    note "a write under ~/.local/share/direnv was refused: if this runs inside an agent sandbox, allow the directory from a normal shell instead" ;;
+  esac
+fi
 
 # --------------------------------------------------------- step 4: prove it
 
@@ -149,11 +200,21 @@ head_ "Verification"
 # variable perfectly well while discarding everything else. So the parent's own
 # exports are checked in the child too: that is the half that fails when the
 # line is absent, and it is the half people skip.
-child_ccd="$(cd "$DIR" && direnv exec . sh -c 'printf "%s" "${CLAUDE_CONFIG_DIR:-}"' 2>/dev/null)"
-if [ "$child_ccd" = "$PROFILE_DIR" ]; then
-  ok "in $DIR: CLAUDE_CONFIG_DIR = $child_ccd"
-else
-  warn "in $DIR: CLAUDE_CONFIG_DIR = ${child_ccd:-<unset>}, expected $PROFILE_DIR"
+if [ -n "$CLAUDE_HALF" ]; then
+  child_ccd="$(cd "$DIR" && direnv exec . sh -c 'printf "%s" "${CLAUDE_CONFIG_DIR:-}"' 2>/dev/null)"
+  if [ "$child_ccd" = "$CLAUDE_HALF" ]; then
+    ok "in $DIR: CLAUDE_CONFIG_DIR = $child_ccd"
+  else
+    warn "in $DIR: CLAUDE_CONFIG_DIR = ${child_ccd:-<unset>}, expected $CLAUDE_HALF"
+  fi
+fi
+if [ -n "$CODEX_HALF" ]; then
+  child_ch="$(cd "$DIR" && direnv exec . sh -c 'printf "%s" "${CODEX_HOME:-}"' 2>/dev/null)"
+  if [ "$child_ch" = "$CODEX_HALF" ]; then
+    ok "in $DIR: CODEX_HOME = $child_ch"
+  else
+    warn "in $DIR: CODEX_HOME = ${child_ch:-<unset>}, expected $CODEX_HALF"
+  fi
 fi
 
 if [ -n "$parent_envrc" ]; then
@@ -168,6 +229,7 @@ if [ -n "$parent_envrc" ]; then
     # it reported "source_up is not taking effect" on a directory where the
     # parent's GH_TOKEN had in fact arrived intact.
     [ "$var" = "CLAUDE_CONFIG_DIR" ] && continue
+    [ "$var" = "CODEX_HOME" ] && continue
     pv="$(cd "$parent_dir" && direnv exec . sh -c "printf '%s' \"\${$var:-}\"" 2>/dev/null)"
     [ -n "$pv" ] || continue
     cv="$(cd "$DIR" && direnv exec . sh -c "printf '%s' \"\${$var:-}\"" 2>/dev/null)"
@@ -186,12 +248,16 @@ EOF
   fi
 
   # And the parent must be unchanged by any of this.
-  parent_ccd="$(cd "$parent_dir" && direnv exec . sh -c 'printf "%s" "${CLAUDE_CONFIG_DIR:-}"' 2>/dev/null)"
-  if [ "$parent_ccd" = "$PROFILE_DIR" ]; then
-    note "$parent_dir also resolves to this profile (it did before, or inherits it)"
-  else
-    ok "$parent_dir keeps its own profile: ${parent_ccd:-<unset>}"
-  fi
+  for pair in "CLAUDE_CONFIG_DIR:$CLAUDE_HALF" "CODEX_HOME:$CODEX_HALF"; do
+    var="${pair%%:*}"; want="${pair#*:}"
+    [ -n "$want" ] || continue
+    parent_v="$(cd "$parent_dir" && direnv exec . sh -c "printf '%s' \"\${$var:-}\"" 2>/dev/null)"
+    if [ "$parent_v" = "$want" ]; then
+      note "$parent_dir also resolves $var to this profile (it did before, or inherits it)"
+    else
+      ok "$parent_dir keeps its own $var: ${parent_v:-<unset>}"
+    fi
+  done
 fi
 
 # ---------------------------------------------------------- step 6: next step
@@ -207,12 +273,17 @@ if [ "$problems" -eq 0 ]; then
   # either: asking for this wiring from inside the directory is itself a
   # conversation, and it was recorded wherever the old account files things.
   # Left to be inferred, this gets skipped; so it is measured and stated.
+  # CLAUDE ONLY from here to the restart advice. Codex keeps thread history
+  # in sqlite under its home, and this skill does not move it (see
+  # references/codex-notes.md), so there is nothing to look for on that side.
+  [ -n "$CLAUDE_HALF" ] || note "Codex history is not carried between profiles; a Codex-only binding has nothing to migrate"
   bound_slug="$(printf '%s' "$DIR" | tr '/' '-')"
   # Collected first, acted on after. WHICH action is right depends on HOW MANY
   # sources there are, and that is not known until the sweep finishes -- so
   # nothing may be printed or migrated from inside the loop.
   found=0; sources=""
   while IFS= read -r other; do
+    [ -n "$CLAUDE_HALF" ] || break
     [ -n "$other" ] || continue
     [ "$other" = "$PROFILE_DIR" ] && continue
     n=$(find "$other/projects/$bound_slug" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
@@ -280,12 +351,21 @@ EOF
   printf '  This session still runs on the OLD account — the binding only applies\n'
   printf '  to new launches. To switch now:\n\n'
   printf '    exit\n'
-  printf '    claude\n\n'
+  [ -n "$CLAUDE_HALF" ] && printf '    claude\n'
+  [ -n "$CODEX_HALF" ]  && printf '    codex\n'
+  printf '\n'
   # A binding is not a sign-in: on a fresh profile that relaunch asks for an
   # account, which is easy to read as a fault in the wiring just measured.
-  printf '  The first command leaves this claude; the second relaunches here on the\n'
-  printf '  new profile, and it will ask you to sign in — that prompt is the real\n'
-  printf '  sign-in, not a wiring failure.\n\n'
+  if [ -n "$CLAUDE_HALF" ]; then
+    printf '  The first command leaves this session; claude relaunched here runs on the\n'
+    printf '  new profile, and it will ask you to sign in — that prompt is the real\n'
+    printf '  sign-in, not a wiring failure.\n'
+  fi
+  if [ -n "$CODEX_HALF" ] && [ ! -f "$CODEX_HALF/auth.json" ]; then
+    printf '  The Codex half is not signed in yet. Do that first, by CLI:\n\n'
+    printf '    CODEX_HOME=%s codex login\n' "$CODEX_HALF"
+  fi
+  printf '\n'
   printf '  Then see where it stands against your other accounts:  report.sh\n'
   exit 0
 fi

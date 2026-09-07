@@ -118,3 +118,17 @@ link and corrupt the shared original). Its source is `--from <profile>`,
 defaulting to `~/.claude`. The running session's `CLAUDE_CONFIG_DIR` is
 never used implicitly — an environment-dependent default means two agents
 running the same command produce different profiles.
+
+## Codex
+
+The Codex counterpart is smaller and the credential is a file, not a
+Keychain item — see `codex-notes.md` for the full layout and the copy/link
+rules `create-profile --tool codex` applies. The short version:
+
+| Item | Rule | Why |
+|---|---|---|
+| `auth.json` | never copied | plaintext tokens; an account is acquired by signing in |
+| `config.toml`, `hooks.json`, `rules/` | copied | Codex edits `config.toml` in place |
+| `AGENTS.md` | symlinked as a file | read, not rewritten |
+| `prompts/`, `skills/` | real directory of absolute per-entry links | directory symlinks break installers (#15) |
+| `sessions/`, `*.sqlite` | not moved | thread history is a database; no migration is attempted |
