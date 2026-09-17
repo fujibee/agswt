@@ -24,7 +24,7 @@ operations:
           the Claude half lives at <claude_profiles>/<name>, the Codex half at
           <codex_profiles>/<name>, and wire-direnv binds whichever exist.
         actions:
-          - "Default tool is claude; pass --tool codex for the Codex half."
+          - "Default type is claude; pass --type codex for the Codex half."
           - "Reject a name that already exists as a directory; profiles are never silently reused."
 
       - step: 2
@@ -85,6 +85,31 @@ operations:
           - "If the profile is signed in but nothing points at it, name the two routes: wire-direnv, or migrate-workspace."
 
 
+  switch-account:
+    description: >
+      Sign a profile into a different account. The assignment is the sign-in,
+      so this runs the vendor's own login command and waits for the browser
+      approval; nothing here reads or writes a credential.
+    steps:
+      - step: 1
+        name: show_current
+        description: Who is signed in, and what depends on it.
+        actions:
+          - "Claude: CLAUDE_CONFIG_DIR=<dir> claude auth status --json (exit 1 = signed out, JSON still printed). Codex: codex-ask.py <dir>."
+          - "Resolve every .envrc under the search roots THROUGH direnv and list the directories whose CLAUDE_CONFIG_DIR / CODEX_HOME is this profile; each changes account at its next launch."
+      - step: 2
+        name: sign_in
+        description: Run the login and keep the process alive until the browser returns.
+        actions:
+          - "Claude: CLAUDE_CONFIG_DIR=<dir> claude auth login --claudeai. Codex: CODEX_HOME=<dir> codex login. Wait up to the timeout (default 300 s); on timeout print the command for the person and stop."
+          - "--dry-run stops before this step."
+      - step: 3
+        name: verify_and_say
+        description: Name the account that landed, and the consequence.
+        actions:
+          - "Re-read the identity; say was/now. Same account as before is not an error, it is the person's choice."
+          - "Say that everything bound to the profile follows, running sessions included (measured 2026-09-17, Claude Code 2.1.273: /status showed the new account with no restart). Codex: the shared app-server need not restart (measured); an open Codex thread is not measured."
+
   wire-direnv:
     description: Bind a directory (and everything under it) to a profile.
     steps:
@@ -107,7 +132,7 @@ operations:
         name: write_envrc
         description: Write the binding, with a comment saying why.
         actions:
-          - "Write CLAUDE_CONFIG_DIR for the Claude half and CODEX_HOME for the Codex half — every half that exists under the name, or one with --tool."
+          - "Write CLAUDE_CONFIG_DIR for the Claude half and CODEX_HOME for the Codex half — every half that exists under the name, or one with --type."
           - "Say which half is missing when only one exists, so a one-tool binding is never mistaken for both."
           - "Optionally pin a GitHub identity: export GH_TOKEN=\"$(gh auth token --user <acct>)\""
           - "Never write a literal token into the file; derive it at load time."

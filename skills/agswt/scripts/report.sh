@@ -12,10 +12,10 @@
 # these calls is slow and fragile: one run assembled them by hand and spent
 # minutes on timeouts and retries. The invocations are fixed on purpose.
 #
-# Usage: report.sh [--md | --json] [--tool claude|codex] [--dir PATH]...
+# Usage: report.sh [--md | --json] [--type claude|codex] [--dir PATH]...
 #   --md    a Markdown table — THE FORM TO SHOW A PERSON. Paste it as is.
 #   --json  machine-readable rows
-#   --tool  restrict to one tool (default: every tool that has a profile here)
+#   --type  restrict to one tool (default: every tool that has a profile here)
 #   --dir   report one directory; its tool is read from its contents
 set -uo pipefail
 
@@ -36,8 +36,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --json) AS_JSON=1; shift ;;
     --md)   AS_MD=1; shift ;;
-    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
-            case "$TOOL" in claude|codex) ;; *) printf 'report: --tool must be claude or codex, not %s\n' "$TOOL" >&2; exit 2 ;; esac ;;
+    # --tool is the 0.2.x spelling, kept as an alias.
+    --type|--tool) TOOL="${2:?--type needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) printf 'report: --type must be claude or codex, not %s\n' "$TOOL" >&2; exit 2 ;; esac ;;
     --dir)  d="${2:?--dir needs a path}"; shift 2
             # A directory names its own tool by what it holds. Guessing from
             # the flag alone would send a Codex home to the claude binary,

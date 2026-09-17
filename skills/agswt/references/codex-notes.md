@@ -55,7 +55,7 @@ warns about `CLAUDE_CONFIG_DIR=~/.claude`.
 └── .codex-global-state.json  the desktop app's own state
 ```
 
-`create-profile --tool codex` seeds a new profile from the default home by
+`create-profile --type codex` seeds a new profile from the default home by
 the same two rules as the Claude side:
 
 - **Copied, never symlinked**: `config.toml`, `hooks.json`, `rules/`. Codex

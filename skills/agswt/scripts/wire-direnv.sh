@@ -11,10 +11,10 @@
 # helps whoever runs doctor; writing it correctly helps everybody.
 #
 # Usage:
-#   wire-direnv.sh <profile> [--dir <directory>] [--tool claude|codex] [--migrate] [--profiles-root <dir>]
+#   wire-direnv.sh <profile> [--dir <directory>] [--type claude|codex] [--migrate] [--profiles-root <dir>]
 #
 # One profile NAME may have a Claude half and a Codex half (same name under
-# each tool's root). Without --tool the directory is bound to every half that
+# each tool's root). Without --type the directory is bound to every half that
 # exists: CLAUDE_CONFIG_DIR for the Claude one, CODEX_HOME for the Codex one.
 set -uo pipefail
 
@@ -26,8 +26,8 @@ CLAUDE_DEFAULT="$HOME/.claude"
 AGSWT_VERSION="$(cat "$_here/../VERSION" 2>/dev/null | tr -d '[:space:]')"
 
 usage() {
-  printf 'usage: wire-direnv.sh <profile> [--dir <directory>] [--tool claude|codex] [--migrate] [--profiles-root <dir>]\n'
-  printf '       --tool    bind only that tool'"'"'s half (default: every half that exists)\n'
+  printf 'usage: wire-direnv.sh <profile> [--dir <directory>] [--type claude|codex] [--migrate] [--profiles-root <dir>]\n'
+  printf '       --type    bind only that tool'"'"'s half (default: every half that exists)\n'
   printf '       --migrate moves this directory'"'"'s existing Claude history into the profile\n'
   printf '       the directory defaults to the current one\n'
 }
@@ -42,8 +42,9 @@ PROFILE=""; DIR="$PWD"; MIGRATE=0; TOOL=all
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) DIR="${2:?--dir needs a directory}"; shift 2 ;;
-    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
-            case "$TOOL" in claude|codex) ;; *) die "--tool must be claude or codex, not $TOOL" ;; esac ;;
+    # --tool is the 0.2.x spelling, kept as an alias.
+    --type|--tool) TOOL="${2:?--type needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) die "--type must be claude or codex, not $TOOL" ;; esac ;;
     --migrate) MIGRATE=1; shift ;;
     --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; CODEX_PROFILES="$CLAUDE_PROFILES"; shift 2 ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
@@ -80,8 +81,8 @@ esac
 if [ -z "$CLAUDE_HALF" ] && [ -z "$CODEX_HALF" ]; then
   die "profile not found: $PROFILE
   looked for a Claude half at $CLAUDE_PROFILES/$PROFILE
-  and a Codex half at       $CODEX_PROFILES/$PROFILE$([ "$TOOL" = all ] || printf '\n  (restricted to --tool %s)' "$TOOL")
-  Create one first:  create-profile.sh $PROFILE [--tool codex]"
+  and a Codex half at       $CODEX_PROFILES/$PROFILE$([ "$TOOL" = all ] || printf '\n  (restricted to --type %s)' "$TOOL")
+  Create one first:  create-profile.sh $PROFILE [--type codex]"
 fi
 # PROFILE_DIR stays the Claude half: the history check and the migration
 # below are Claude-only, and they read it.

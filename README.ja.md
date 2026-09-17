@@ -86,6 +86,7 @@ profile の置き場所は既定で **`~/.claude_profiles`**（Claude）と
 | `rename-workspace` | ディレクトリ移動に保存済み slug を追従させる | Claude |
 | `doctor` | 既知の故障モードを点検 | Claude, Codex |
 | `report` | 全 profile の消費量レポート | Claude, Codex |
+| `switch-account` | profile を別アカウントでサインインし直す。追従するディレクトリも表示 | Claude, Codex |
 
 ## 知っていることの一例
 

@@ -65,7 +65,7 @@ location. See `references/traps.md`.
 Creating a profile changes nothing by itself — a profile only matters once
 something runs against it. The path is:
 
-    create-profile [--tool codex]
+    create-profile [--type codex]
         → wire-direnv <profile> --dir <dir>   for a directory that should use it
         → migrate-workspace --to <profile>    for an existing Claude project moving in
         → launch claude in that directory — it asks you to sign in, once
@@ -130,19 +130,46 @@ Everything else (directories, slugs, paths) is always a flag.
 
 | Operation | What it does | Tools |
 |---|---|---|
-| `create-profile` | New work profile, then **stops** and prints the sign-in command | Claude, Codex (`--tool codex`) |
+| `create-profile` | New work profile, then **stops** and prints the sign-in command | Claude, Codex (`--type codex`) |
 | `verify` | Confirm a profile is actually signed in, and as whom | Claude, Codex |
 | `migrate-workspace` | Move one project's data between profiles | Claude only |
 | `wire-direnv` | Bind a directory to a profile via `.envrc` | both halves at once |
 | `rename-workspace` | Make a stored slug follow a moved directory | Claude only |
 | `doctor` | Check for the failure modes in `references/traps.md` | Claude, Codex |
-| `report` | Usage across all profiles | Claude, Codex (`--tool` to restrict) |
+| `report` | Usage across all profiles | Claude, Codex (`--type` to restrict) |
+| `switch-account` | Sign a profile into a different account, naming what changes | Claude, Codex |
+
+## Switching the account behind a profile
+
+The assignment of an account to a profile is the sign-in, so changing it is
+signing in again — and that can be driven from here. `switch-account
+<profile> [--type claude|codex]` prints who is signed in now and **which
+directories are bound to the profile** (every `.envrc` under `~/projects`,
+or `--dirs <root>`, resolved through direnv), runs the vendor's own login
+command, waits for the browser approval, and prints who landed. Measured
+2026-09-17 from an agent shell: `claude auth login --claudeai` runs a
+localhost callback server and finishes on its own once the browser returns,
+as long as the process is kept alive (the "paste code" prompt is a fallback);
+`codex login` does the same. `--dry-run` stops before the sign-in and is the
+way to answer "which directories use profile X?" without changing anything.
+
+Say the consequence out loud, every time: **everything bound to the profile
+follows, sessions already running included.** Measured 2026-09-17 on Claude
+Code 2.1.273: a session started under the old account showed the new one in
+`/status` right after the switch, with no restart — the client reads the
+credential per request and holds nothing from launch. (An earlier version of
+this file said running sessions keep the old account; that was inferred, not
+measured, and it was wrong.) For Codex a shared app-server does not need
+restarting either — a new thread on the same server picked up the new account
+(measured 2026-09-13); an already-open Codex thread is not measured.
 
 ## Never attempt the login yourself
 
-Signing in is an OAuth flow: it opens a browser and needs a human. **Prepare
-everything, print the exact command, and stop.** Do not run `claude auth login`,
-and do not report a profile as ready before its login has been confirmed.
+Signing in is an OAuth flow: it opens a browser and needs a human to approve
+it. **Prepare everything, and never report a profile as ready before its
+login has been confirmed.** Running the login command is fine — that is what
+`switch-account` does — but the approval is the person's, and a command that
+timed out waiting for it has signed nobody in.
 
 The handoff looks like this:
 
@@ -296,7 +323,7 @@ as a sign-in problem.
 
 ## Codex: what is and is not covered
 
-Covered: profiles (`create-profile --tool codex`), binding (`wire-direnv`
+Covered: profiles (`create-profile --type codex`), binding (`wire-direnv`
 writes `CODEX_HOME` beside `CLAUDE_CONFIG_DIR`), `doctor`, and `report`.
 
 Not covered, on purpose: moving Codex history. Codex is moving its thread

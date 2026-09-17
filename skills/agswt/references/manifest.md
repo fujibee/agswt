@@ -123,7 +123,7 @@ running the same command produce different profiles.
 
 The Codex counterpart is smaller and the credential is a file, not a
 Keychain item — see `codex-notes.md` for the full layout and the copy/link
-rules `create-profile --tool codex` applies. The short version:
+rules `create-profile --type codex` applies. The short version:
 
 | Item | Rule | Why |
 |---|---|---|
