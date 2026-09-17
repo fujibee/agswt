@@ -388,3 +388,21 @@ $ direnv allow .        # from inside the sandbox
 lifted for that command (Codex asks for approval), or from a normal shell.
 Every script now appends the failing binary's last stderr line to its
 status, so the sandbox names itself instead of hiding behind an exit code.
+
+---
+
+## `claude auth status` exits 1 when signed out, and that is the answer
+
+**Symptom.** A signed-out profile is reported as "usage unreadable (no quota
+line)" instead of "signed out", and a script that checks the exit code
+before reading the JSON never learns which.
+
+**Cause.** `claude auth status --json` prints its JSON either way and uses
+the exit code as the verdict: 0 when `loggedIn` is true, 1 when false
+(measured 2026-09-16, three directories). Gating the parse on exit 0
+discards exactly the signed-out case.
+
+**Fix.** Parse the JSON whenever stdout holds one; read `loggedIn` from it.
+Note also that the `oauthAccount` block in `.claude.json` survives a
+sign-out, so it names the account a directory belonged to but does not
+prove anyone is signed in — `auth status` is the authority.

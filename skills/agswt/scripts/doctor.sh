@@ -198,7 +198,7 @@ list_profiles() {
 $(find "$dir" -mindepth 1 -maxdepth 1 -type d \
     ! -name projects ! -name memory ! -name plugins ! -name skills \
     ! -name commands ! -name todos ! -name statsig ! -name shell-snapshots \
-    ! -name backups ! -name sessions ! -name '.*' 2>/dev/null | sort)
+    ! -name backups ! -name sessions ! -name jobs ! -name '.*' 2>/dev/null | sort)
 INNER
 }
 all_profiles() {

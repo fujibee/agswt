@@ -118,7 +118,7 @@ if [ "$EXPLICIT" -eq 0 ] && [ "$TOOL" != codex ]; then
 $(find "$dir" -mindepth 1 -maxdepth 1 -type d \
     ! -name projects ! -name memory ! -name plugins ! -name skills \
     ! -name commands ! -name todos ! -name statsig ! -name shell-snapshots \
-    ! -name backups ! -name sessions ! -name '.*' 2>/dev/null | sort)
+    ! -name backups ! -name sessions ! -name jobs ! -name '.*' 2>/dev/null | sort)
 INNER
   }
   while IFS= read -r d; do
@@ -286,28 +286,38 @@ def ask(d, attempts=2):
 
 
 def account_of(d):
+    """(email or None, signed_in or None).
+
+    The oauthAccount block in .claude.json SURVIVES a sign-out (measured
+    2026-09-16: a profile reading loggedIn:false still carried its old
+    e-mail there), so it names the account the directory belonged to but
+    does not prove anyone is signed in. `claude auth status` is the
+    authority for that; its e-mail is also what identifies the default
+    directory, which has no oauthAccount block at all."""
+    email = None
     try:
         with open(os.path.join(d, ".claude.json")) as fh:
             acct = json.load(fh).get("oauthAccount") or {}
-        if acct.get("emailAddress"):
-            return acct["emailAddress"]
+        email = acct.get("emailAddress") or None
     except (ValueError, OSError):
         pass
-    # The long-lived default directory has no oauthAccount block, so without
-    # this it reports as ".claude" and cannot be deduplicated against the
-    # profile signed into the same account.
+    signed_in = None
     try:
         r = subprocess.run(["claude", "auth", "status", "--json"], env=env_for(d),
                            cwd=QUERY_CWD,
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, text=True, timeout=60)
-        if r.returncode == 0:
-            email = (json.loads(r.stdout) or {}).get("email")
-            if email:
-                return email
+        # The exit code is the answer, not a failure: measured 2026-09-16,
+        # `claude auth status` exits 1 when loggedIn is false and 0 when
+        # true, and prints the JSON either way. Gating on 0 threw away
+        # exactly the signed-out verdict this function exists to return.
+        st = json.loads(r.stdout) if (r.stdout or "").strip().startswith("{") else {}
+        if "loggedIn" in st:
+            signed_in = bool(st.get("loggedIn"))
+        email = st.get("email") or email
     except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
-    return None
+    return email, signed_in
 
 
 def parse_reset(text):
@@ -359,16 +369,20 @@ def fmt_reset(text):
 
 rows = []
 for d in dirs:
-    windows, why = ask(d)
-    acct = account_of(d)
+    acct, signed_in = account_of(d)
+    # A signed-out profile is not asked for usage: the answer is known, and
+    # the question costs a subprocess and a "no quota line" that hides the
+    # real state behind a parse failure.
+    windows, why = (None, "signed out") if signed_in is False else ask(d)
     row = {"tool": "claude", "config_dir": d, "account": acct or label(d),
-           "identified": acct is not None}
+           "identified": acct is not None, "signed_in": signed_in}
     # PLAN is not available: the subscription name lived in the credential
     # blob, which is no longer read, and the prose does not carry it. The
     # column stays so it fills itself in if the binary ever reports one.
     row["plan"] = None
     if windows is None:
-        row.update(status=f"usage unreadable ({why}) — sign in with: {signin_hint(d)}",
+        row.update(status=(f"signed out — sign in with: {signin_hint(d)}" if why == "signed out"
+                           else f"usage unreadable ({why}) — sign in with: {signin_hint(d)}"),
                    five=None, seven=None, five_r=None, seven_r=None)
     else:
         five, seven = windows.get("session"), windows.get("all models")
@@ -444,16 +458,35 @@ for a in ask_codex(codex_dirs):
 # problem worth seeing, and collapsing them silently is what hides it.
 # Keyed by tool AND account: the same e-mail on Claude and on Codex is two
 # subscriptions, not one.
-merged = {}
+# The row that answered wins. Several profiles can carry one account and
+# only some of them be signed in; taking the first one found reported the
+# account as unreadable while another directory had its numbers
+# (measured 2026-09-16: one profile signed out, another signed in, same
+# e-mail). Directories still fold into the winner, and the ones that did not
+# answer are named so a stale profile stays visible.
+merged, order = {}, []
 for r in rows:
     key = (r["tool"], r["account"] if r["identified"] else "dir:" + r["config_dir"],
            r.get("limit_name"))
-    if key in merged:
-        merged[key]["dirs"].append(r["config_dir"])
-        continue
-    r["dirs"] = [r["config_dir"]]
-    merged[key] = r
-rows = list(merged.values())
+    if key not in merged:
+        r["dirs"] = []
+        r["stale_dirs"] = []
+        merged[key] = r
+        order.append(key)
+    cur = merged[key]
+    if r is not cur and r["five"] is not None and cur["five"] is None and cur["seven"] is None:
+        # promote: keep the accumulated directory lists
+        r["dirs"], r["stale_dirs"] = cur["dirs"], cur["stale_dirs"]
+        merged[key] = r
+        cur = r
+    (cur["dirs"] if (r["five"] is not None or r["seven"] is not None)
+     else cur["stale_dirs"]).append(r["config_dir"])
+for r in merged.values():
+    # a directory that answered nothing is still the row's directory when it
+    # is the only one
+    if not r["dirs"]:
+        r["dirs"], r["stale_dirs"] = r["stale_dirs"], []
+rows = [merged[k] for k in order]
 
 if as_json:
     print(json.dumps(rows, indent=2, ensure_ascii=False))
@@ -477,9 +510,14 @@ if as_md:
         tool = r["tool"] + (f" · {r['limit_name']}" if r.get("limit_name") else "")
         print(f"| {r['account']} | {tool} | {r['plan'] or '-'} | {f5} | {f7} | "
               f"{fmt_reset(r['five_r'])} | {fmt_reset(r['seven_r'])} | {status} |")
-        if len(r["dirs"]) > 1:
+        # The folded-directories note belongs to the account row only; an
+        # extra-limit row under the same account would repeat it verbatim.
+        if len(r["dirs"]) > 1 and not r.get("limit_name"):
             notes.append(f"- {r['account']} ({r['tool']}): same account in {len(r['dirs'])} profiles — "
                          + ", ".join(label(d, r["tool"]) for d in r["dirs"]))
+        if r.get("stale_dirs") and not r.get("limit_name"):
+            notes.append(f"- {r['account']} ({r['tool']}): not answering (signed out?) — "
+                         + ", ".join(label(d, r["tool"]) for d in r["stale_dirs"]))
         c = r.get("credits")
         if c:
             notes.append(f"- {r['account']} (codex): monthly credits {c['used']:,.0f} of "
@@ -504,9 +542,12 @@ for r in rows:
           f"{fmt_reset(r['five_r']):<23} {fmt_reset(r['seven_r']):<23} {status}".rstrip())
     if r.get("limit_name"):
         print(f"{'':<{w}}  ^ limit: {r['limit_name']}")
-    if len(r["dirs"]) > 1:
+    if len(r["dirs"]) > 1 and not r.get("limit_name"):
         print(f"{'':<{w}}  same account in {len(r['dirs'])} profiles: "
               + ", ".join(label(d, r["tool"]) for d in r["dirs"]))
+    if r.get("stale_dirs") and not r.get("limit_name"):
+        print(f"{'':<{w}}  not answering (signed out?): "
+              + ", ".join(label(d, r["tool"]) for d in r["stale_dirs"]))
     c = r.get("credits")
     if c:
         print(f"{'':<{w}}  monthly credits {c['used']:,.0f} of {c['limit']:,.0f} used "

@@ -158,7 +158,20 @@ the account has, and the windows differ by plan:
 
 `report` prints one row per limit id — the first as the account row, the
 others named after the limit — and treats a plan with a single window as
-read correctly, not as a missing 5h (measured 2026-09-07). The same answer
+read correctly, not as a missing 5h (measured 2026-09-07).
+
+Where the Spark limit comes from: `gpt-5.3-codex-spark` is a research-preview
+model that OpenAI gives to the ChatGPT Pro tiers only (`planType: prolite`
+is the $100 Pro tier), with "its own rate limits" that "will not count
+towards standard rate limits"
+([OpenAI, Introducing GPT-5.3-Codex-Spark](https://openai.com/index/introducing-gpt-5-3-codex-spark/)).
+The limit is an entitlement of the plan, not a consequence of use: measured
+2026-09-13, the Pro Lite account's `model/list` carries the Spark model and
+its rate-limit answer carries `codex_bengalfox`, while the Team account's
+list has no Spark and its answer has only `codex` — and the Pro Lite
+account had never run Spark (every rollout under that home is sol or luna)
+yet the limit was present in every snapshot. So a Spark row at 0% is the
+plan saying the model is available, nothing more. The same answer
 carries `individualLimit`, which is the pool the TUI shows as "Monthly
 credit limit" (the same 2,337-of-3,000 figure, measured on a Team account);
 `report` prints it under the table as monthly credits. Plans without a pool
