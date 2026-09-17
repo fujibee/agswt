@@ -13,9 +13,9 @@
 # command and exits; a profile it prepared is NOT ready, and it says so.
 #
 # Usage:
-#   create-profile.sh <name> [--tool claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]
+#   create-profile.sh <name> [--type claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]
 #     <name> may contain '/' for a nested profile: create-profile.sh work/acme
-#     --tool    which tool's profile to create (default: claude). A Codex
+#     --type    which tool's profile to create (default: claude). A Codex
 #               profile lives under the Codex root (~/.codex_profiles) under
 #               the SAME name, so "work/acme" can have both halves.
 #     --from    where settings.json / config.toml is copied FROM (default: the tool's default dir)
@@ -37,15 +37,16 @@ die()   { printf 'create-profile: %s\n' "$*" >&2; exit 2; }
 head_() { printf '\n== %s\n' "$*"; }
 
 usage() {
-  printf 'usage: create-profile.sh <name> [--tool claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]\n'
+  printf 'usage: create-profile.sh <name> [--type claude|codex] [--from <profile>] [--shared <dir>] [--profiles-root <dir>]\n'
   printf '       <name> may contain / to nest under a group (parents are created)\n'
 }
 
 NAME=""; FROM=""; SHARED=""; SHARED_SET=""; TOOL=claude
 while [ $# -gt 0 ]; do
   case "$1" in
-    --tool) TOOL="${2:?--tool needs claude or codex}"; shift 2
-            case "$TOOL" in claude|codex) ;; *) die "--tool must be claude or codex, not $TOOL" ;; esac ;;
+    # --tool is the 0.2.x spelling, kept as an alias.
+    --type|--tool) TOOL="${2:?--type needs claude or codex}"; shift 2
+            case "$TOOL" in claude|codex) ;; *) die "--type must be claude or codex, not $TOOL" ;; esac ;;
     --from) FROM="${2:?--from needs a profile}"; shift 2 ;;
     --shared) SHARED="${2:?--shared needs a dir}"; SHARED_SET=1; shift 2 ;;
     --profiles-root) CLAUDE_PROFILES="${2:?--profiles-root needs a dir}"; CODEX_PROFILES="$CLAUDE_PROFILES"; shift 2 ;;

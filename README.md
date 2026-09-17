@@ -90,6 +90,7 @@ the same variables, so a location changes in one place or not at all.
 | `rename-workspace` | Make a stored slug follow a moved directory | Claude |
 | `doctor` | Check the known failure modes | Claude, Codex |
 | `report` | Usage across every profile | Claude, Codex |
+| `switch-account` | Sign a profile into a different account; shows which directories follow | Claude, Codex |
 
 ## A sample of what it knows
 
